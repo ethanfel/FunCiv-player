@@ -68,7 +68,7 @@ In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync 
 - **Local videos:** available videos, including those without motion scripts; use Follow song or Neutral hold for those.
 - **Used in session:** the clips currently placed on your timeline, with a usage count. This view retains used clips below the minimum or marked draft so you can identify conflicts.
 
-Each compact row shows its name, duration, stars, availability, review status and category. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
+Each compact row shows its name, duration, stars, availability, review status and categories. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. HF clip details also show the published category names and relative folder paths; search matches those paths as well. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
 
 Open **Filters**, then choose **Sort clips → Rating: highest first** to browse by stars. Set **Minimum rating for session → 4★ or higher** or **5★ only**, then click **Assemble** or **New variation**. Assembly varies its choices among qualifying clips; display sorting does not rearrange the timeline. Search, Show and Sort are browsing controls; the minimum rating also applies to assembly, manual replacement choices, preview and export. Unrated clips qualify only under **All ratings**. Draft inclusion remains a separate assembly filter. The collapsed Filters summary shows the active minimum and draft setting.
 
@@ -88,7 +88,9 @@ To use unchecked HF scripts, enable **Composer → Clip library → Filters → 
 
 Sam3D now publishes all variants as drafts by default (`review_policy: "all-drafts"`), even when they have a quality rating or were locally saved with “Approve & save”. The library shows how many drafts are present and explains when the dataset uses this policy. **Stars and review status are independent:** selecting drafts plus **4★ or higher** still excludes unrated scripts. Choose **All ratings (including unrated)** to browse those too. Resolving a variant verifies its files but does not mark it reviewed.
 
-Categories are local editorial tags; the dataset currently does not provide a category taxonomy. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
+**Sync FunCiv Data** imports the publisher's `categories` and `category_paths`. Short category names appear in section folder choices; full relative paths appear in clip details and are searchable. Clips may belong to several published categories. Draft status and star ratings remain independent.
+
+Existing automatic **Uncategorized** entries gain the published labels on the next sync. Labels you edited manually stay as overrides; click **Use imported categories** in that clip's details to restore the current imported set. Without published labels, Composer uses a matching local video's folder where available, or Uncategorized. Older snapshots without category fields remain readable. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
 
 ## Playback, devices, and temporary video
 

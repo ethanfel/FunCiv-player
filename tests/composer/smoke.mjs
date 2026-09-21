@@ -23,7 +23,7 @@ try{
   await service.scan(path.join(root,'clips'),signal);const song=await service.importSong(path.join(root,'Preview song.wav'),signal);
   await service.tag(service.catalog.clips.find(c=>c.name==='B.mp4').id,'Flow');
   service.catalog.clips.push({id:'synthetic-remote',name:'Remote fixture',origin:'dataset',quality:5,review_status:'approved',available:false,duration_ms:2000,categories:['Pulse']});await service.saveCatalog();
-  service.catalog.clips.push({...structuredClone(service.catalog.clips.find(c=>c.name==='A.mp4')),id:'synthetic-draft',name:'Draft fixture',origin:'dataset',quality:5,review_status:'draft',categories:['Draft'],commit:'a'.repeat(40),variant_id:'b'.repeat(64)});
+  service.catalog.clips.push({...structuredClone(service.catalog.clips.find(c=>c.name==='A.mp4')),id:'synthetic-draft',name:'Draft fixture',origin:'dataset',quality:5,review_status:'draft',categories:['Draft','Alternate'],dataset_categories:['Draft','Alternate'],automatic_categories:['Draft','Alternate'],category_paths:['Season/Draft','Season/Alternate'],commit:'a'.repeat(40),variant_id:'b'.repeat(64)});
   service.catalog.clips.push({id:'synthetic-unrated-draft',name:'Unrated draft fixture',origin:'dataset',quality:0,review_status:'draft',available:false,duration_ms:2000,categories:['Draft']});
   await service.saveCatalog();
   app=await electron.launch({args:['--no-sandbox','--disable-gpu','--disable-frame-rate-limit','--disable-gpu-vsync',checkout],env:{...process.env,FUNCIV_USER_DATA:userData,CIVITAI_API_TOKEN:''},timeout:45000});
@@ -42,6 +42,18 @@ try{
   assert.equal(await page.locator('[data-field=drafts]').isChecked(),false);
   assert.ok((await page.locator('.fc-dataset-review').textContent()).includes('2 draft variants'));
   await page.locator('[data-field=drafts]').check({force:true});assert.equal(await page.locator('.fc-clip').count(),6);
+  await page.locator('[data-field=search]').fill('Season/Alternate');assert.equal(await page.locator('.fc-clip').count(),1);
+  assert.ok((await page.locator('.fc-clip-category').textContent()).includes('Draft, Alternate'));
+  assert.ok((await page.locator('.fc-imported-categories').textContent()).includes('Season/Alternate'));
+  await page.locator('.fc-clip-details [data-field=tag]').fill('My folder');await page.locator('.fc-clip-details [data-field=tag]').press('Tab');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.id==='synthetic-draft').manual_categories===true);
+  assert.ok((await page.locator('.fc-clip-category').textContent()).includes('My folder'));
+  await page.locator('[data-action=reset-category]').click({force:true});
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.id==='synthetic-draft').manual_categories===false);
+  assert.deepEqual(await page.evaluate(()=>window.app.composer.catalog.clips.find(c=>c.id==='synthetic-draft').categories),['Draft','Alternate']);
+  assert.equal(await page.locator('[data-action=reset-category]').count(),0);
+  await page.locator('[data-field=search]').fill('');
+  console.log('PASS: HF folder-path search, multiple category labels, persisted manual override and restoring imported categories.');
   await page.locator('[data-field=drafts]').uncheck({force:true});assert.equal(await page.locator('.fc-clip').count(),4);
   await page.locator('[data-field=library-view]').selectOption('ready');assert.equal(await page.locator('.fc-clip').count(),2);
   await page.locator('[data-field=library-view]').selectOption('local');assert.equal(await page.locator('.fc-clip').count(),3);
@@ -60,6 +72,9 @@ try{
   await page.locator('[data-field=library-view]').selectOption('all');assert.equal(await page.locator('.fc-clip').count(),3,'remote variant remains discoverable');
   await page.locator('[data-field=library-view]').selectOption('ready');
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
+  await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
+  assert.equal(await page.locator('.fc-folder-dialog input[value=Alternate]').count(),1,'HF category labels appear in the song-section folder picker');
+  await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'song');
   assert.ok(await page.evaluate(()=>!window.app.composer.session.analysis&&!window.app.composer.session.placements.length&&!window.app.composer.prepared));

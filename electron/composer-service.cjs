@@ -14,6 +14,12 @@ const REPO = 'ethanfel/FunCiv-Data';
 const hash = data => createHash('sha256').update(data).digest('hex');
 const core = () => import('../packages/composer-core/index.mjs');
 
+function categoryList(value,field,maxLength){
+  if(value===undefined)return [];
+  if(!Array.isArray(value)||value.some(c=>typeof c!=='string'||!c.trim()||c.length>maxLength||/[\x00-\x1f\x7f]/.test(c)))throw new Error(`Invalid dataset ${field}.`);
+  return [...new Set(value.map(c=>c.trim()))];
+}
+
 async function atomic(file, value) {
   await fs.mkdir(path.dirname(file),{recursive:true});
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -99,7 +105,16 @@ class ComposerService {
     if(!this.catalog.roots.includes(root))this.catalog.roots.push(root);
     await this.saveCatalog();return {count:found.length,warnings};
   }
-  async tag(id,category){const c=this.catalog.clips.find(c=>c.id===id);if(!c)throw new Error('Clip not found.');category=String(category).trim();if(!category||category.length>160)throw new Error('Enter a category of 1–160 characters.');c.categories=[category];c.manual_categories=true;await this.saveCatalog();return this.state();}
+  async tag(id,category){
+    const c=this.catalog.clips.find(c=>c.id===id);if(!c)throw new Error('Clip not found.');
+    if(category===null){
+      if(c.origin!=='dataset')throw new Error('Only dataset clips have imported categories to restore.');
+      c.categories=[...(c.automatic_categories||c.dataset_categories?.length&&c.dataset_categories||['Uncategorized'])];c.manual_categories=false;
+    }else{
+      category=String(category).trim();if(!category||category.length>160)throw new Error('Enter a category of 1–160 characters.');c.categories=[category];c.manual_categories=true;
+    }
+    await this.saveCatalog();return this.state();
+  }
   async rate(id,rating){
     if(rating!==null&&(!Number.isInteger(rating)||rating<0||rating>5))throw new Error('Rating must be an integer from 0 to 5, or null to reset.');
     const clip=this.catalog.clips.find(c=>c.id===id);if(!clip)throw new Error('Clip not found.');
@@ -131,9 +146,14 @@ class ComposerService {
     for(const row of rows){
       if(!/^[1-9]\d{0,15}$/.test(row.civitai_id)||!/^[a-f0-9]{64}$/.test(row.variant_id)||!Number.isFinite(row.duration_ms)||row.duration_ms<=0)throw new Error('Invalid dataset row.');
       const id=`hf-${row.civitai_id}-${row.variant_id.slice(0,20)}`,existing=this.catalog.clips.find(c=>c.id===id);
-      const local=this.catalog.clips.find(c=>c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
+      const local=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
+      const datasetCategories=categoryList(row.categories,'categories',160),categoryPaths=categoryList(row.category_paths,'category paths',4096);
+      const automaticCategories=datasetCategories.length?datasetCategories:local?.categories?.length?local.categories:
+        row.categories===undefined&&!existing?.manual_categories&&existing?.categories?.length?existing.categories:['Uncategorized'];
       incoming.push({...existing,id,name:`Civitai ${row.civitai_id}`,civitai_id:row.civitai_id,variant_id:row.variant_id,
-        duration_ms:row.duration_ms,categories:existing?.categories||local?.categories||['Uncategorized'],review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
+        duration_ms:row.duration_ms,categories:existing?.manual_categories?[...existing.categories]:[...automaticCategories],manual_categories:existing?.manual_categories===true,
+        dataset_categories:datasetCategories,category_paths:categoryPaths,automatic_categories:[...automaticCategories],
+        review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
         preferred:row.preferred,origin:'dataset',commit:info.sha,remote_scripts:row.scripts,
         // An earlier prepared binding remains tied to its revision; fetching a new catalog doesn't replace saved sessions.
         scripts:existing?.commit===info.sha?existing.scripts:undefined,path:existing?.path||local?.path,url:existing?.url||local?.url,

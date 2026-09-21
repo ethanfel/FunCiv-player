@@ -79,7 +79,7 @@ export class ComposerView {
     this.catalog=await this.ipc('state');if(this.ratingConflicts().length||this.draftConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
     this.root.querySelector('[data-field=saved]').innerHTML='<option value="">Open session…</option>'+options(this.saved.map(s=>[s.id,s.name]),'');
     this.root.querySelector('[data-field=song]').innerHTML='<option value="">Recent songs…</option>'+options(this.catalog.songs.map(s=>[s.id,s.name]),'');
-    this.renderLibrary();
+    this.renderLibrary();this.renderInspector();
   }
   async job(action,payload){
     if(this.busy)throw new Error('Wait for the current task or cancel it.');
@@ -114,6 +114,7 @@ export class ComposerView {
   async action(action,button){
     if(this.timeline.action(action))return;
     if(action==='inspect-library-clip'){this.clipLibrary.select(button.dataset.id);return;}
+    if(action==='reset-category'){this.catalog=await this.ipc('tag',{id:button.dataset.id,category:null});this.renderLibrary();this.renderInspector();this.message('Imported categories restored.');return;}
     if(action==='select-section'){this.selectSection(Number(button.dataset.index));return;}
     if(action==='section-folders'){this.regionEditor.folders(button.dataset.id);return;}
     if(await this.regionEditor.action(action,button))return;
@@ -271,7 +272,7 @@ export class ComposerView {
     const used=new Map();for(const p of this.session?.placements||[])if(p.clip_id)used.set(p.clip_id,(used.get(p.clip_id)||0)+1);
     const clips=this.catalog.clips.filter(c=>
       (view==='used'?used.has(c.id):(this.includeDrafts||!isDraftClip(c))&&clipRating(c)>=minimum)&&
-      (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&`${c.name} ${(c.categories||[]).join(' ')}`.toLowerCase().includes(search))
+      (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&`${c.name} ${(c.categories||[]).join(' ')} ${(c.category_paths||[]).join(' ')}`.toLowerCase().includes(search))
       .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
     const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;
     warning.textContent=`${conflicts.length} used clip${conflicts.length===1?' is':'s are'} below ${minimum}★. Unlock affected sections and assemble again, or replace them. “Used in session” keeps these clips visible.`;

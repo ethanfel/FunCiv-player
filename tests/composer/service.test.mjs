@@ -120,6 +120,50 @@ test('local rating overrides survive dataset refresh and restart; reset restores
   await assert.rejects(()=>reopened.rate('missing',5),/Clip not found/);
 });
 
+test('HF categories migrate old entries, refresh automatically and preserve manual overrides',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-categories-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  let metadata={},revision='a';
+  const fetchImpl=async url=>{
+    const content=JSON.stringify({civitai_id:'123',variant_id:'b'.repeat(64),duration_ms:1000,quality:5,review_status:'draft',scripts:{},...metadata})+'\n';
+    if(url.includes('/api/datasets/'))return new Response(JSON.stringify({sha:revision.repeat(40)}));
+    if(url.endsWith('manifest.json'))return new Response(JSON.stringify({schema:'s3f-public-funscripts/1',review_policy:'all-drafts',files:{'data/catalog.jsonl':hash(content)}}));
+    return new Response(content);
+  };
+  const service=await new ComposerService(root,{fetchImpl}).init();
+  await service.refreshDataset();const id=service.state().clips[0].id,remote=()=>service.state().clips.find(c=>c.id===id);
+  assert.deepEqual(remote().categories,['Uncategorized'],'old snapshots remain readable');
+  await service.rate(id,4);
+  // Put a matching local file after the old remote row to catch remote self-matching.
+  service.catalog.clips.push({id:'local-fixture',civitai_id:'123',path:path.join(root,'fixture.mp4'),available:true,duration_ms:1000,categories:['Local folder']});
+  metadata={categories:['Flow','Pulse','Flow'],category_paths:['Season/Flow','Season/Pulse']};revision='c';
+  await service.refreshDataset();
+  assert.equal(remote().id,id);assert.deepEqual(remote().categories,['Flow','Pulse']);assert.equal(remote().manual_categories,false);
+  assert.deepEqual(remote().category_paths,metadata.category_paths);assert.equal(remote().user_rating,4);assert.equal(remote().review_status,'draft');
+  const song={id:'song',duration_ms:1000,name:'Synthetic song'},session=createSession(song,1);
+  session.include_drafts=true;session.min_rating=4;session.sections[0].motion='hold';session.sections[0].categories=['Pulse'];
+  assert.equal(arrange(session,service.state().clips).placements[0].clip_id,id,'published labels feed section matching');
+  session.include_drafts=false;assert.throws(()=>arrange(session,service.state().clips),/No usable clips/,'categories do not bypass draft policy');
+  await service.tag(id,'My category');metadata={categories:['Revised','Flow'],category_paths:['New/Revised','New/Flow']};revision='d';
+  await service.refreshDataset();
+  assert.deepEqual(remote().categories,['My category']);assert.deepEqual(remote().dataset_categories,metadata.categories);
+  assert.deepEqual(remote().automatic_categories,metadata.categories);assert.deepEqual(remote().category_paths,metadata.category_paths);
+  const reopened=await new ComposerService(root,{fetchImpl}).init();
+  assert.equal(reopened.state().clips.find(c=>c.id===id).manual_categories,true);
+  await reopened.tag(id,null);assert.deepEqual(reopened.state().clips.find(c=>c.id===id).categories,['Revised','Flow']);
+  assert.equal(reopened.state().clips.find(c=>c.id===id).manual_categories,false);
+  await reopened.tag(id,'Uncategorized');await reopened.refreshDataset();
+  assert.deepEqual(reopened.state().clips.find(c=>c.id===id).categories,['Uncategorized'],'an explicit override remains intentional');
+  metadata={categories:[],category_paths:[]};await reopened.refreshDataset();await reopened.tag(id,null);
+  assert.deepEqual(reopened.state().clips.find(c=>c.id===id).categories,['Local folder'],'empty public labels use an available local folder');
+  reopened.catalog.clips=reopened.catalog.clips.filter(c=>c.id!=='local-fixture');await reopened.refreshDataset();
+  assert.deepEqual(reopened.state().clips[0].categories,['Uncategorized']);
+  const before=reopened.state();
+  for(const invalid of [{categories:'Flow'},{categories:[12]},{categories:['']},{categories:['x'.repeat(161)]},{category_paths:[null]}]){
+    metadata=invalid;await assert.rejects(()=>reopened.refreshDataset(),/Invalid dataset categor/);
+    assert.deepEqual(reopened.state(),before,'malformed labels cannot replace the catalog');
+  }
+});
+
 test('HF all-drafts catalog resolves checked scripts against a local video and persists explicit use',async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-drafts-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const commit='a'.repeat(40),key=hash('civitai:123'),variant='b'.repeat(64),signal=new AbortController().signal,calls=[];

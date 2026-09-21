@@ -83,6 +83,7 @@
 .fc-detail-title{display:block;margin:6px 0;overflow-wrap:anywhere;font-size:12px}
 .fc-clip-details>button{width:100%;font-size:11px!important;margin-top:10px}
 .fc-detail-fields input,.fc-detail-fields select{width:100%;padding:6px!important;font-size:11px!important}
+.fc-imported-categories{margin:8px 0;overflow-wrap:anywhere}.fc-imported-categories small{display:block}.fc-imported-categories button{font-size:10px!important;margin-top:6px}
 
 /* The timeline's canvases stay viewport-sized while tracks scroll underneath. */
 .fc-timeline-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 8px;font-size:11px}
