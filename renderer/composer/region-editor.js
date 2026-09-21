@@ -1,4 +1,5 @@
 import { clone, validateSession, sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, suggestRegionCuts, snapToAudio, clipRating, allowsClipReview, sourceTime, isAudioSyncClip, hasMotionForSection } from '../../packages/composer-core/index.mjs';
+import { folderReadiness } from './clip-readiness.js';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=ms=>(ms/1000).toFixed(3);
@@ -83,16 +84,19 @@ export class RegionEditor {
     v.selectSection(session.sections.indexOf(section));
     const selected=new Set(sectionCategories(section)),categories=[...new Set(v.catalog.clips.flatMap(c=>c.categories||[]).concat([...selected]))].sort();
     const dialog=document.createElement('dialog');dialog.className='fc-dialog fc-folder-dialog';
-    dialog.innerHTML=`<form method="dialog"><h2>Folders for ${esc(section.label)}</h2><p>This is a full song section. Its clips may come from any category you check.</p><label class="fc-check"><input name="any" type="checkbox" ${selected.size?'':'checked'}> Any folder / category</label><div class="fc-folder-choices">${categories.map(category=>{
-      const pool=v.catalog.clips.filter(c=>c.categories?.includes(category)),eligible=pool.filter(c=>c.available&&allowsClipReview(session,c)&&clipRating(c)>=v.minimumRating()&&hasMotionForSection(c,section));
-      return `<label class="fc-check"><input name="category" value="${esc(category)}" type="checkbox" ${selected.has(category)?'checked':''}><span>${esc(category)}<small>${eligible.length} eligible · ${pool.length} catalog clips</small></span></label>`;
-    }).join('')||'<p>Add a local folder or sync the dataset to get categories.</p>'}</div><p>Categories come from local folders and HF metadata. Sync FunCiv Data to import published labels; select a library clip to override its category. Ratings, draft settings and available scripts still apply.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="apply" class="fc-primary">Apply folders</button></div></form>`;
+    dialog.innerHTML=`<form method="dialog"><h2>Folders for ${esc(section.label)}</h2><p>This is a full song section. Its clips may come from any category you check.</p>
+      <div class="fc-folder-help"><strong>${v.catalog.roots?.length?`${v.catalog.roots.length} local folder${v.catalog.roots.length===1?'':'s'} indexed`:'No local folder indexed'}</strong><p>“Video not linked” means the app has no local match yet. If your videos are already on disk, index their folder to connect them to HF.</p><button value="index">Index local folder…</button><small>Session filters: ${v.minimumRating()?v.minimumRating()+'★ or higher':'all ratings'} · drafts ${v.includeDrafts?'included':'excluded'}. Ready counts use this section’s motion setting.</small></div>
+      <label class="fc-check"><input name="any" type="checkbox" ${selected.size?'':'checked'}> Any folder / category</label><div class="fc-folder-choices">${categories.map(category=>{
+      const status=folderReadiness(v.catalog.clips.filter(c=>c.categories?.includes(category)),session,section);
+      return `<label class="fc-check"><input name="category" value="${esc(category)}" type="checkbox" ${selected.has(category)?'checked':''}><span>${esc(category)}<small>${status.ready} ready · ${status.total} catalog clips</small>${status.reasons.length?`<small class="fc-folder-reasons">${esc(status.reasons.join(' · '))}</small>`:''}</span></label>`;
+    }).join('')||'<p>Add a local folder or sync the dataset to get categories.</p>'}</div><p>Several reasons can apply to one clip. Use Library → Filters for ratings/drafts, or Get HF scripts for linked videos. HF categories and your folder choices are kept when files are linked.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="apply" class="fc-primary">Apply folders</button></div></form>`;
     dialog.addEventListener('change',event=>{
       if(event.target.name==='any'&&event.target.checked)dialog.querySelectorAll('[name=category]').forEach(c=>{c.checked=false;});
       if(event.target.name==='category')dialog.querySelector('[name=any]').checked=![...dialog.querySelectorAll('[name=category]')].some(c=>c.checked);
     });
     dialog.addEventListener('close',()=>{
       const choice=[...dialog.querySelectorAll('[name=category]:checked')].map(c=>c.value);dialog.remove();
+      if(dialog.returnValue==='index'){void v.action('scan').catch(e=>v.message(e.message,true));return;}
       if(dialog.returnValue!=='apply')return;
       try{if(v.session!==session)throw new Error('The session changed. Open its folder choices again.');this.setCategories(id,choice);v.message('Folder choices applied. Compatible clips and trims are kept; assemble to fill empty regions.');}catch(e){v.message(e.message,true);}
     });

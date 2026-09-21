@@ -7,8 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposerService } from '../../electron/composer-service.cjs';
-import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary } from './timeline-ui.mjs';
+import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary, checkLibraryReadiness } from './timeline-ui.mjs';
 import { checkSectionHandles, checkPopulatedSectionHandle } from './section-ui.mjs';
+import { checkDraftAssembly } from './assembly-ui.mjs';
 
 const checkout=fileURLToPath(new URL('../..',import.meta.url));
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-electron-'));
@@ -80,6 +81,8 @@ try{
   await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
   assert.equal(await page.locator('.fc-folder-dialog input[value=Alternate]').count(),1,'HF category labels appear in the song-section folder picker');
   await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
+  await checkLibraryReadiness(page,path.join(checkout,'docs','composer-folder-readiness.png'));
+  await checkDraftAssembly(page,until);
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'song');
   assert.ok(await page.evaluate(()=>!window.app.composer.session.analysis&&!window.app.composer.session.placements.length&&!window.app.composer.prepared));
@@ -260,6 +263,8 @@ try{
   await page.locator('[data-field=drafts]').check({force:true});
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
   assert.equal(await page.evaluate(()=>window.app.composer.session.include_drafts),true,'explicit choice carries into a new song');
+  assert.equal(await page.locator('[data-field=repeat_policy]').inputValue(),'never','new songs default to unique footage');
+  await page.locator('[data-field=repeat_policy]').selectOption('cycle'); // One-video audio-sync fixture intentionally repeats.
   await page.locator('[data-field=min_rating]').selectOption('5');
   await page.locator('[data-field=library-view]').selectOption('all');
   assert.equal(await page.locator('[data-clip-id=synthetic-draft]').count(),1);

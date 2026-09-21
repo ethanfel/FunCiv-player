@@ -24,6 +24,8 @@ function registerComposerIPC(){
       case 'state':return s.state();
       case 'song':{const result=await dialog.showOpenDialog({title:'Choose a song',properties:['openFile'],filters:[{name:'Audio',extensions:['wav','mp3','flac','m4a','ogg','opus','aac']}]});return result.canceled?null:s.startJob('song',(signal,update)=>s.importSong(result.filePaths[0],signal,update));}
       case 'scan':{const result=await dialog.showOpenDialog({title:'Choose a clip library',properties:['openDirectory']});return result.canceled?null:s.startJob('scan',(signal,update)=>s.scan(result.filePaths[0],signal,update));}
+      case 'rescan':return s.startJob('scan',(signal,update)=>s.rescan(signal,update));
+      case 'fetch-scripts':return s.startJob('scripts',(signal,update)=>s.fetchLocalScripts(payload.ids,signal,update));
       case 'tag':return s.tag(payload.id,payload.category);
       case 'rating':return s.rate(payload.id,payload.rating);
       case 'dataset':return s.startJob('dataset',(signal,update)=>s.refreshDataset(signal,update));

@@ -7,7 +7,7 @@ const clips=['A','B','C'].map((name,i)=>({id:name,name,categories:[name],duratio
 const planned=()=>{const s=createSession(song,1);return planRegions(s,s.sections[0].id,[2000,4000]);};
 
 test('section category pools include any selected folder and retain legacy category support',()=>{
-  const s=createSession(song,1);s.sections[0].categories=['A','B'];s.min_rating=4;
+  const s=createSession(song,1);s.sections[0].categories=['A','B'];s.min_rating=4;s.repeat_policy='cycle';
   const ready=arrange(planRegions(s,s.sections[0].id,[1000,2000,3000,4000,5000]),clips);
   assert.deepEqual(new Set(ready.placements.map(p=>p.clip_id)),new Set(['A','B']));
   delete s.sections[0].categories;s.sections[0].category='B';assert.deepEqual(sectionCategories(s.sections[0]),['B']);

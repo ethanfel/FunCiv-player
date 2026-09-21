@@ -1,5 +1,45 @@
 import assert from 'node:assert/strict';
 
+export async function checkLibraryReadiness(page,screenshot){
+  const previous=await page.evaluate(()=>{
+    const c=window.app.composer,old={roots:c.catalog.roots,view:c.root.querySelector('[data-field=library-view]').value,selected:c.clipLibrary.selected};
+    c.catalog.roots=[];
+    const video=c.catalog.clips.find(c=>c.name==='A.mp4');
+    c.catalog.clips.push({...video,id:'needs-hf-scripts',origin:'dataset',name:'Local video with HF scripts',categories:['Pending scripts'],quality:5,user_rating:undefined,review_status:'approved',scripts:undefined,script_ready:false,remote_scripts:{L0:{}}});
+    c.root.querySelector('[data-field=library-view]').value='all';c.renderLibrary();return old;
+  });
+  assert.ok((await page.locator('.fc-local-library').textContent()).includes('No local folder indexed'));
+  assert.equal(await page.locator('.fc-local-library [data-action=fetch-scripts]').textContent(),'Get HF scripts · 1 local video');
+  await page.locator('[data-action=inspect-library-clip][data-id=needs-hf-scripts]').click({force:true});
+  assert.ok((await page.locator('.fc-file-status').textContent()).includes('Local video linked'));
+  assert.ok((await page.locator('.fc-file-status').textContent()).includes('A.mp4'));
+  assert.equal(await page.locator('.fc-clip-details [data-action=fetch-scripts]').textContent(),'Get HF scripts');
+  assert.equal(await page.locator('.fc-clip-details [data-action=resolve]').count(),0,'linked video offers scripts only');
+  await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
+  assert.ok((await page.locator('.fc-folder-help').textContent()).includes('No local folder indexed'));
+  assert.ok((await page.locator('.fc-folder-help').textContent()).includes('drafts excluded'));
+  const folder=category=>page.locator('.fc-folder-choices label').filter({has:page.locator(`input[value="${category}"]`)});
+  assert.ok((await folder('Pulse').textContent()).includes('video not linked'));
+  assert.ok((await folder('Draft').textContent()).includes('drafts excluded'));
+  assert.ok((await folder('Pending scripts').textContent()).includes('1 needs HF scripts'));
+  assert.equal(await page.locator('.fc-folder-dialog button[value=index]').count(),1);
+  assert.ok(!(await page.locator('.fc-folder-choices').textContent()).includes('eligible'));
+  await page.screenshot({path:screenshot});
+  await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
+  // Check the bulk action selects linked, qualifying videos only, without a live network request.
+  await page.evaluate(()=>{const c=window.app.composer;c.testJob=c.job;c.job=async(action,payload)=>{c.testScriptRequest={action,payload};return {count:payload.ids.length,warnings:[]};};});
+  await page.locator('.fc-local-library [data-action=fetch-scripts]').click({force:true});
+  assert.deepEqual(await page.evaluate(()=>window.app.composer.testScriptRequest),{action:'fetch-scripts',payload:{ids:['needs-hf-scripts']}});
+  await page.evaluate(old=>{
+    const c=window.app.composer;c.job=c.testJob;delete c.testJob;delete c.testScriptRequest;
+    c.catalog.clips=c.catalog.clips.filter(c=>c.id!=='needs-hf-scripts');c.catalog.roots=old.roots;
+    c.clipLibrary.selected=old.selected;c.root.querySelector('[data-field=library-view]').value=old.view;c.renderLibrary();
+  },previous);
+  assert.ok((await page.locator('.fc-local-library').textContent()).includes('1 local folder indexed'));
+  assert.equal(await page.locator('.fc-local-library [data-action=rescan]').count(),1);
+  console.log('PASS: local folder guidance, linked file paths, separate readiness/filter reasons, and scripts-only bulk selection.');
+}
+
 export async function checkTimelineEditing(page,until){
   const recipe=await page.evaluate(()=>JSON.stringify(window.app.composer.session));
   await page.evaluate(()=>window.app.composer.setPosition(3000));

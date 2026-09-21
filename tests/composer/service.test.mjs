@@ -18,13 +18,13 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   const clipId=service.state().clips[0].id;await service.rate(clipId,5);await service.scan(library,signal);
   assert.equal(service.state().clips[0].user_rating,5,'local ratings survive rescans');
   const song=await service.importSong(path.join(root,'song.wav'),signal);assert.equal(song.duration_ms,2800);
-  const draft=createSession(song,1),planned=planRegions(draft,draft.sections[0].id,[700,1400,2100]);
+  const draft={...createSession(song,1),repeat_policy:'cycle'},planned=planRegions(draft,draft.sections[0].id,[700,1400,2100]);
   const savedPlan=await service.saveSession(planned);assert.deepEqual((await service.loadSession(savedPlan.id)).placements,planned.placements);
   await assert.rejects(()=>service.prepare(savedPlan),/regions are empty/);
   const assigned=arrange(savedPlan,service.state().clips),trimmed=slipSource(assigned,assigned.placements[0].id,200,service.state().clips);
   const savedTrim=await service.saveSession(trimmed);assert.equal((await service.loadSession(savedTrim.id)).placements[0].source_in_ms,200);
   const trimPreview=await service.prepare(savedTrim);assert.equal(trimPreview.snapshot.placements[0].source_in_ms,200);
-  const initial=arrange({...createSession(song,2),min_rating:5},service.state().clips);delete initial.output; // Legacy landscape recipe.
+  const initial=arrange({...createSession(song,2),min_rating:5,repeat_policy:'cycle'},service.state().clips);delete initial.output; // Legacy landscape recipe.
   const saved=await service.saveSession(initial);
   assert.equal(saved.revision,1);assert.deepEqual(await service.loadSession(saved.id),saved);
   await assert.rejects(()=>service.saveSession(initial),/newer saved session/);
@@ -134,7 +134,8 @@ test('HF categories migrate old entries, refresh automatically and preserve manu
   assert.deepEqual(remote().categories,['Uncategorized'],'old snapshots remain readable');
   await service.rate(id,4);
   // Put a matching local file after the old remote row to catch remote self-matching.
-  service.catalog.clips.push({id:'local-fixture',civitai_id:'123',path:path.join(root,'fixture.mp4'),available:true,duration_ms:1000,categories:['Local folder']});
+  const file=path.join(root,'fixture.mp4');await fs.writeFile(file,'synthetic file identity');const stat=await fs.stat(file);
+  service.catalog.clips.push({id:'local-fixture',civitai_id:'123',path:file,size:stat.size,mtime:stat.mtimeMs,available:true,duration_ms:1000,categories:['Local folder']});
   metadata={categories:['Flow','Pulse','Flow'],category_paths:['Season/Flow','Season/Pulse']};revision='c';
   await service.refreshDataset();
   assert.equal(remote().id,id);assert.deepEqual(remote().categories,['Flow','Pulse']);assert.equal(remote().manual_categories,false);

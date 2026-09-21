@@ -87,9 +87,9 @@ class ComposerService {
         const stat=await fs.stat(file),id=`local-${hash(file).slice(0,24)}`,existing=this.catalog.clips.find(c=>c.id===id);
         const info=existing?.size===stat.size&&existing?.mtime===stat.mtimeMs?{...existing,video:true}:await this.probe(file,signal);
         if(!info.video)continue;
-        const base=file.slice(0,-path.extname(file).length),scripts={};
+        const base=file.slice(0,-path.extname(file).length),scripts={},script_hashes={};
         for(const [axis,suffix] of Object.entries(AXES)){
-          try{const data=await readJSON(base+suffix+'.funscript');validateActions(data.actions);scripts[axis]=data;}
+          try{const bytes=await fs.readFile(base+suffix+'.funscript'),data=JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/,''));validateActions(data.actions);scripts[axis]=data;script_hashes[axis]=hash(bytes);}
           catch(e){if(e.code!=='ENOENT')warnings.push(`${path.basename(file)} ${axis}: ${e.message}`);}
         }
         const relative=path.relative(root,path.dirname(file)),category=relative||path.basename(root);
@@ -97,13 +97,78 @@ class ComposerService {
           categories:existing?.manual_categories?existing.categories:[category],manual_categories:existing?.manual_categories||false,
           ...(existing?.user_rating !== undefined ? {user_rating:existing.user_rating} : {}),
           civitai_id:/(?:^|_)civitai_([1-9]\d*)(?:_|\.)/i.exec(path.basename(file))?.[1]||null,
-          review_status:existing?.review_status||'local',scripts,available:true,size:stat.size,mtime:stat.mtimeMs});
+          review_status:existing?.review_status||'local',scripts,script_hashes,available:true,size:stat.size,mtime:stat.mtimeMs});
       }catch(e){if(signal?.aborted)throw e;warnings.push(`${path.basename(file)}: ${e.message}`);}
     }
     const old=this.catalog.clips.filter(c=>c.root===root);for(const c of old)if(!found.some(f=>f.id===c.id))c.available=false;
     this.catalog.clips=this.catalog.clips.filter(c=>!found.some(f=>f.id===c.id)).concat(found);
     if(!this.catalog.roots.includes(root))this.catalog.roots.push(root);
-    await this.saveCatalog();return {count:found.length,warnings};
+    const linked=await this.linkLocalClips(this.catalog.clips,signal);
+    await this.saveCatalog();return {count:found.length,linked,warnings};
+  }
+  async rescan(signal,update=()=>{}){
+    let count=0;const warnings=[];
+    for(const root of this.catalog.roots){
+      signal?.throwIfAborted();
+      try{const result=await this.scan(root,signal,update);count+=result.count;warnings.push(...result.warnings);}
+      catch(e){if(signal?.aborted)throw e;warnings.push(`${root}: ${e.message}`);}
+    }
+    const linked=await this.linkLocalClips(this.catalog.clips,signal);await this.saveCatalog();
+    return {count,linked,warnings};
+  }
+  async linkLocalClips(clips,signal){
+    const locals=this.catalog.clips.filter(c=>c.origin!=='dataset'&&c.available&&c.civitai_id&&c.path);
+    let linked=0;
+    for(const clip of clips.filter(c=>c.origin==='dataset')){
+      signal?.throwIfAborted();
+      const candidates=locals.filter(c=>c.civitai_id===clip.civitai_id&&Math.abs(c.duration_ms-clip.duration_ms)<150);
+      const currentLocal=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.path===clip.path);
+      const current=candidates.find(c=>c.path===clip.path)||(!currentLocal&&!clip.local_video_id&&clip.path?clip:null);
+      let video=null;
+      for(const candidate of [...new Set([current,...candidates].filter(Boolean))]){
+        try{const stat=await fs.stat(candidate.path);if(stat.isFile()&&stat.size===candidate.size&&stat.mtimeMs===candidate.mtime){video=candidate;break;}}catch{}
+      }
+      clip.available=!!video;
+      if(!video)continue;
+      Object.assign(clip,{path:video.path,url:video.url,size:video.size,mtime:video.mtime,width:video.width,height:video.height});
+      const local=candidates.find(c=>c.path===video.path);
+      if(!local)continue;
+      clip.local_video_id=local.id;linked++;
+      if(!clip.dataset_categories?.length){clip.automatic_categories=[...local.categories];if(!clip.manual_categories)clip.categories=[...local.categories];}
+      // A filename and matching duration identify the video, not the script variant.
+      // Reuse sidecars only if every published axis has the exact HF checksum.
+      const axes=Object.keys(clip.remote_scripts||{}).filter(axis=>Object.hasOwn(AXES,axis));
+      if(!clip.scripts?.L0&&axes.includes('L0')&&axes.every(axis=>local.scripts?.[axis]&&local.script_hashes?.[axis]===clip.remote_scripts[axis].sha256)){
+        clip.scripts=structuredClone(Object.fromEntries(axes.map(axis=>[axis,local.scripts[axis]])));
+      }
+    }
+    return linked;
+  }
+  async fetchScripts(clip,signal,update=()=>{}){
+    const {validateActions}=await core(),scripts={};
+    for(const [axis,descriptor] of Object.entries(clip.remote_scripts||{})){
+      signal?.throwIfAborted();if(!Object.hasOwn(AXES,axis))continue;
+      if(!/^scripts\/[a-f0-9]{2}\/[a-f0-9]{64}\/[a-f0-9]{64}(\.(surge|sway|twist|roll|pitch))?\.funscript$/.test(descriptor.path)||!/^[a-f0-9]{64}$/.test(descriptor.sha256))throw new Error('Invalid script descriptor.');
+      update(.1,`Fetching ${axis} script…`);const bytes=await this.bytes(`https://huggingface.co/datasets/${REPO}/raw/${clip.commit}/${descriptor.path}`,{signal});
+      if(hash(bytes)!==descriptor.sha256)throw new Error(`${axis} script checksum mismatch.`);
+      const data=JSON.parse(bytes);validateActions(data.actions);scripts[axis]=data;
+    }
+    if(!scripts.L0)throw new Error('This HF entry has no L0 script.');
+    return scripts;
+  }
+  async fetchLocalScripts(ids,signal,update=()=>{}){
+    if(!Array.isArray(ids)||ids.length>5000||ids.some(id=>typeof id!=='string'))throw new Error('Choose valid library clips.');
+    let count=0;const warnings=[],selected=[...new Set(ids)].map(id=>this.catalog.clips.find(c=>c.id===id));
+    for(let i=0;i<selected.length;i++){
+      signal?.throwIfAborted();const clip=selected[i];
+      try{
+        if(!clip||clip.origin!=='dataset'||!clip.available||!clip.path)throw new Error('Link a local video first.');
+        const stat=await fs.stat(clip.path);if(!stat.isFile()||stat.size!==clip.size||stat.mtimeMs!==clip.mtime)throw new Error('Local video changed. Rescan its folder.');
+        clip.scripts=await this.fetchScripts(clip,signal,(_,message)=>update(i/selected.length,`${i+1}/${selected.length} · ${message}`));
+        await this.saveCatalog();count++;
+      }catch(e){if(signal?.aborted)throw e;warnings.push(`${clip?.name||'Unknown clip'}: ${e.message}`);}
+    }
+    return {count,warnings};
   }
   async tag(id,category){
     const c=this.catalog.clips.find(c=>c.id===id);if(!c)throw new Error('Clip not found.');
@@ -158,10 +223,9 @@ class ComposerService {
         review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
         preferred:row.preferred,origin:'dataset',commit:info.sha,remote_scripts:row.scripts,
         // An earlier prepared binding remains tied to its revision; fetching a new catalog doesn't replace saved sessions.
-        scripts:existing?.commit===info.sha?existing.scripts:undefined,path:existing?.path||local?.path,url:existing?.url||local?.url,
-        ...(!existing?.path&&local?{size:local.size,mtime:local.mtime,width:local.width,height:local.height}:{}),
-        available:!!(existing?.path||local?.path),binding:'duration-compatible'});
+        scripts:existing?.commit===info.sha?existing.scripts:undefined,binding:'duration-compatible'});
     }
+    await this.linkLocalClips(incoming,signal);
     this.catalog.clips=this.catalog.clips.filter(c=>c.origin!=='dataset').concat(incoming);
     this.catalog.dataset={repo:REPO,commit:info.sha,count:incoming.length,
       review_policy:['all-drafts','folder-approval'].includes(manifest.review_policy)?manifest.review_policy:null,
@@ -185,14 +249,8 @@ class ComposerService {
     const clip=this.catalog.clips.find(c=>c.id===id);if(!clip)throw new Error('Clip not found.');
     if(clip.origin!=='dataset')return clip;
     if(!['civitai.com','civitai.red','civitaired.com'].includes(site))throw new Error('Choose a supported Civitai site.');
-    const {validateActions}=await core(),scripts={};
-    for(const [axis,descriptor] of Object.entries(clip.remote_scripts)){
-      signal.throwIfAborted();if(!AXES.hasOwnProperty(axis))continue;
-      if(!/^scripts\/[a-f0-9]{2}\/[a-f0-9]{64}\/[a-f0-9]{64}(\.(surge|sway|twist|roll|pitch))?\.funscript$/.test(descriptor.path)||!/^[a-f0-9]{64}$/.test(descriptor.sha256))throw new Error('Invalid script descriptor.');
-      update(.1,`Fetching ${axis} script…`);const bytes=await this.bytes(`https://huggingface.co/datasets/${REPO}/raw/${clip.commit}/${descriptor.path}`,{signal});
-      if(hash(bytes)!==descriptor.sha256)throw new Error(`${axis} script checksum mismatch.`);
-      const data=JSON.parse(bytes);validateActions(data.actions);scripts[axis]=data;
-    }
+    await this.linkLocalClips([clip],signal);
+    const scripts=await this.fetchScripts(clip,signal,update);
     let file=clip.path;try{await fs.access(file);}catch{file=null;}
     if(!file){
       update(.3,'Resolving Civitai video…');

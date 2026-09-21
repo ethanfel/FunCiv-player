@@ -5,6 +5,8 @@ import { createSession, arrange, compile, validateSession, clipRating, remapActi
 const script={actions:[{at:0,pos:0},{at:500,pos:100},{at:1000,pos:0}]};
 const clips=['a','b','c'].map(id=>({id,name:id,duration_ms:1000,available:true,categories:['A'],scripts:{L0:script,R0:script}}));
 const song={id:'song',name:'test.wav',duration_ms:6000};
+// These compiler/filter fixtures deliberately reuse three one-second videos.
+const repeatingSession=(...args)=>({...createSession(...args),repeat_policy:'cycle'});
 
 test('trim and retime interpolate source bounds and apply strength once',()=>{
   const p={start_ms:2000,end_ms:2500,source_in_ms:250,rate:1};
@@ -14,7 +16,7 @@ test('trim and retime interpolate source bounds and apply strength once',()=>{
   assert.equal(songTime(p,sourceTime(p,2099.123)),2099.123);
 });
 test('arrangement is deterministic, covers each section, honors locks and categories',()=>{
-  const initial=createSession(song,3);initial.sections.forEach(s=>s.category='A');
+  const initial=repeatingSession(song,3);initial.sections.forEach(s=>s.category='A');
   const first=arrange(initial,clips);assert.deepEqual(first,arrange(initial,clips));
   for(let i=1;i<first.placements.length;i++)assert.notEqual(first.placements[i].clip_id,first.placements[i-1].clip_id);
   first.sections[1].locked=true;first.seed++;
@@ -25,10 +27,10 @@ test('arrangement is deterministic, covers each section, honors locks and catego
 });
 test('renderer catalog summaries can arrange script-ready assets',()=>{
   const visible=clips.map(({scripts,...c})=>({...c,script_ready:true}));
-  assert.equal(arrange(createSession(song,1),visible).placements.length,6);
+  assert.equal(arrange(repeatingSession(song,1),visible).placements.length,6);
 });
 test('compilation emits six bounded ordered axes and millisecond chapters',()=>{
-  const s=arrange(createSession(song,3),clips),output=compile(s,clips);
+  const s=arrange(repeatingSession(song,3),clips),output=compile(s,clips);
   assert.equal(Object.keys(output.scripts).length,6);
   assert.equal(output.scripts.L0.metadata.chapters[1].startTime,2000);
   for(const data of Object.values(output.scripts)){
@@ -38,7 +40,7 @@ test('compilation emits six bounded ordered axes and millisecond chapters',()=>{
   assert.ok(output.scripts.L1.actions.every(a=>a.pos===50));
 });
 test('song motion replaces only explicitly marked gaps; holds stay neutral',()=>{
-  const s=arrange(createSession(song,1),clips);
+  const s=arrange(repeatingSession(song,1),clips);
   s.analysis={duration_ms:6000,bpm:120,confidence:.8,waveform:Array(60).fill(1),beats:[],onsets:[]};
   s.sections[0].motion='gaps';s.sections[0].gaps=[[2100,2800]];
   const output=compile(s,clips);assert.ok(output.blocks.some(b=>b.kind==='song'&&b.start_ms===2100));
@@ -47,19 +49,19 @@ test('song motion replaces only explicitly marked gaps; holds stay neutral',()=>
   s.sections[0].motion='hold';assert.ok(compile(s,clips).scripts.L0.actions.every(a=>a.pos===50));
 });
 test('invalid ranges, gaps, rate, uncovered timeline and stale clip IDs are rejected',()=>{
-  const s=arrange(createSession(song,2),clips);
+  const s=arrange(repeatingSession(song,2),clips);
   s.placements[0].rate=4;assert.throws(()=>compile(s,clips),/exceeds/);
   s.placements[0].rate=1;s.placements.pop();assert.throws(()=>compile(s,clips),/does not cover/);
   s.sections[0].end_ms--;assert.throws(()=>validateSession(s),/without gaps/);
 });
 test('undo and redo isolate past snapshots',()=>{
-  const history=new History(),s=createSession(song);history.record(s);s.sections[0].label='changed';
+  const history=new History(),s=repeatingSession(song);history.record(s);s.sections[0].label='changed';
   const old=history.undo(s);assert.equal(old.sections[0].label,'Section 1');assert.equal(history.redo(old).sections[0].label,'changed');
 });
 
 test('minimum ratings select 4★+ or 5★ only and exclude unrated variants',()=>{
   const rated=clips.map((c,i)=>({...c,quality:[4,5,0][i]}));
-  const s=createSession(song,1);s.min_rating=4;
+  const s=repeatingSession(song,1);s.min_rating=4;
   const four=arrange(s,rated);assert.deepEqual(new Set(four.placements.map(p=>p.clip_id)),new Set(['a','b']));
   s.min_rating=5;assert.ok(arrange(s,rated).placements.every(p=>p.clip_id==='b'));
   assert.throws(()=>arrange(s,rated.filter(c=>c.id!=='b')),/5★ or higher/);
@@ -72,14 +74,14 @@ test('rating overrides preserve explicit unrated and malformed ratings are not s
   assert.equal(clipRating({quality:5,user_rating:0}),0);
   assert.equal(clipRating({quality:2,user_rating:4}),4);
   for(const quality of [undefined,null,'5',4.5,-1,6,NaN])assert.equal(clipRating({quality}),0);
-  const s=createSession(song,1);s.min_rating=5;
+  const s=repeatingSession(song,1);s.min_rating=5;
   assert.throws(()=>arrange(s,clips.map(c=>({...c,quality:5,user_rating:0}))),/No usable clips/);
   for(const min_rating of [null,'4',4.5,-1,6,NaN])assert.throws(()=>validateSession({...s,min_rating}),/Minimum rating/);
 });
 
 test('locked clips and existing placements cannot bypass the minimum at compilation',()=>{
   const rated=clips.map((c,i)=>({...c,quality:[4,5,0][i]}));
-  const s=arrange({...createSession(song,1),min_rating:4},rated);s.sections[0].locked=true;s.min_rating=5;
+  const s=arrange({...repeatingSession(song,1),min_rating:4},rated);s.sections[0].locked=true;s.min_rating=5;
   assert.doesNotThrow(()=>validateSession(s),'a session can be edited while placements need fixing');
   assert.throws(()=>arrange(s,rated),/Unlock affected sections/);
   assert.throws(()=>compile(s,rated),/below the 5★ minimum/);
@@ -90,7 +92,7 @@ test('locked clips and existing placements cannot bypass the minimum at compilat
 
 test('HF drafts require explicit opt-in, independently of stars; legacy sessions exclude drafts',()=>{
   const catalog=clips.map((c,i)=>({...c,origin:'dataset',review_status:'draft',quality:[5,0,4][i]}));
-  const s=createSession(song,1);assert.equal(s.include_drafts,false);s.min_rating=4;
+  const s=repeatingSession(song,1);assert.equal(s.include_drafts,false);s.min_rating=4;
   assert.throws(()=>arrange(s,catalog),/No usable clips/);
   s.include_drafts=true;
   assert.deepEqual(new Set(arrange(s,catalog).placements.map(p=>p.clip_id)),new Set(['a','c']));
@@ -109,7 +111,7 @@ test('HF drafts require explicit opt-in, independently of stars; legacy sessions
 
 test('disabling drafts preserves editable regions but blocks kept clips and every compilation policy',()=>{
   const catalog=[{...clips[0],review_status:'draft',quality:5},{...clips[1],review_status:'approved',quality:5}];
-  const s=createSession(song,1);s.include_drafts=true;
+  const s=repeatingSession(song,1);s.include_drafts=true;
   const planned=arrange(planRegions(s,s.sections[0].id,[1000,2000,3000,4000,5000]),catalog.slice(0,1));
   planned.include_drafts=false;
   assert.doesNotThrow(()=>validateSession(planned));

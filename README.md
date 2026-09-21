@@ -31,14 +31,14 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 ## Make a session
 
 1. Open **Composer**, then **Load song**. Audio is converted once to a cached stereo 48 kHz WAV. Recent imported songs are reusable. **Playback → Song only** is selected: press **Play** to listen immediately, before analysis or clip selection. Pause, Volume, the position slider and clicking the waveform work here; **Stop** returns to the beginning. You can listen while deciding where to mark sections and clip regions.
-2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Change a clip's category directly in the library.
+2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Scanning links matching HF entries immediately by Civitai ID and compatible duration, whether you synced HF before or after scanning. Expand the local-folder count to see registered paths and **Rescan local folders**. Change a clip's category directly in the library.
 3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections as a starting layout; they are not detected verses or fixed durations. Drag the purple dividers between them to adjust their boundaries, rename them, or seek on the waveform/ruler and use **Split song section** / **Merge song sections**.
 4. Click a section's **Folders** button, choose one or several categories, and **Apply folders**. Select the section to choose its motion policy in the inspector:
    - **Clip / audio sync:** use each clip's existing script, or generate song-driven strokes for clips marked Audio sync.
    - **Follow song:** generate L0 motion from the song's tempo and energy, including when the clip has no script.
    - **Clip + marked gaps:** use the same clip/audio-sync behavior, with song motion in your explicitly marked gaps as well.
    - **Neutral hold:** keep all axes at their neutral position.
-5. Click **Assemble**. **New variation** changes unlocked choices; **Keep clips on variation** retains a section's placements. Click a clip on the timeline to replace it or adjust its source start and speed. Invalid source ranges are rejected.
+5. Click **Assemble**. By default each source video is selected only once across the song. If matching drafts can fill a shortage, Composer offers **Use drafts and assemble**, retaining category and rating filters; accept to include drafts for this session. **New variation** changes unlocked choices; **Keep clips on variation** retains a section's placements. Click a clip on the timeline to replace it or adjust its source start and speed. Invalid source ranges are rejected.
 6. **Prepare preview**, then **Play**. Preparation selects **Video + motion preview**, keeps your current song position and stays paused until Play. The song is the master clock; two muted video decoders prepare consecutive cuts. A decoder stall pauses the audio clock. Choose **Playback → Song only** to listen independently again, including while regions are empty or used clips need resolving. Song-only playback releases device sync. Editing pauses playback and invalidates its prepared snapshot. Undo/redo is available.
 7. **Save session** keeps the recipe, song analysis, and asset bindings. Reopening a saved recipe rejects changed media/scripts until you deliberately reassemble.
 
@@ -61,17 +61,21 @@ The timeline supports continuous **1×–256× zoom** with its slider, preset se
 
 **Resize song sections directly:** drag a purple divider on the song-section track. A vertical guide shows the boundary's exact time while both neighboring sections update. **Snap to audio** uses nearby analyzed beats/onsets; hold **Alt** for free movement. At high zoom, dragging near the viewport edge scrolls the timeline. Release to commit one undo step, or press **Escape** to cancel. Focus a divider and use **Left/Right** for exact 100 ms changes, or **Shift + Left/Right** for 1 second changes; keyboard nudges bypass snapping. The start/end of the song stay fixed, neighbors stay joined, and each section keeps at least 100 ms. Unlock both sections if their divider is disabled. Exact end times remain editable in the Section inspector.
 
+**Assembly and repeats:** **Session → Video repeats → Never repeat a video** is the default, including when assembling an older recipe without this setting. Local copies and HF script variants of one Civitai video count as the same source. Kept clips are reserved before choosing new clips, and existing kept edits remain intact. If no arrangement can be filled, the current timeline stays unchanged. Composer offers matching drafts only when a trial arrangement succeeds with the same category, duration, rating and repeat rules; the dialog names the number of drafts and any script downloads needed. Accepting enables drafts and assembles in one undo step. Cancelling or a failed fetch preserves the recipe. **Reuse after matching videos are used** is an explicit alternative for small libraries.
+
 Moving a section boundary keeps existing video timing and source portions. Footage crossing the new boundary is split with continuous source timing; incompatible clips transferred into another category pool become empty regions for reassignment. Other sections remain unchanged.
 
 ## Find available clips and choose ratings
 
 In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync FunCiv Data** for dataset variants. **Show** offers:
 
-- **All catalog:** matching local clips and remote variants. Remote entries may need **Resolve video + scripts** before use.
+- **All catalog:** matching local clips and remote variants. Clip details distinguish linked videos, unavailable files, and HF scripts that still need fetching.
 - **Ready for motion:** locally available videos with a loaded L0 script or an Audio sync marker. Marked clips need song analysis before preview.
 - **Local videos:** available videos, including those without motion scripts; use Follow song or Neutral hold for those.
 - **Audio sync clips:** clips marked to use song-driven motion. The rating and draft filters still apply.
 - **Used in session:** the clips currently placed on your timeline, with a usage count. This view retains used clips below the minimum or marked draft so you can identify conflicts.
+
+The section folder dialog shows **ready** counts and the actual reasons other entries cannot be used: **video not linked**, **local video unavailable**, **needs HF scripts**, **no motion script**, **draft excluded**, and **below the minimum rating**. Several reasons can apply to one clip. “Not linked” describes the app's index; the video may already exist on disk. Use **Index local folder…** in that dialog or **＋ Folder** in the library to connect it.
 
 Each compact row shows its name, duration, stars, availability, review status and categories. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. HF clip details also show the published category names and relative folder paths; search matches those paths as well. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
 
@@ -87,7 +91,9 @@ The minimum is saved with the session. Raising it preserves your timeline and lo
 
 Use **API settings** to choose `civitai.com`, `civitai.red`, or `civitaired.com`. An optional API key is stored with Electron's system credential encryption; unsupported plaintext storage is rejected. Alternatively set `CIVITAI_API_TOKEN` in the launching environment. The key is used for the metadata API and is not forwarded to media downloads or redirected endpoints.
 
-Select a variant, then click **Resolve video + scripts** in its details to fetch its verified axes. An indexed local video with a matching Civitai ID is reused when its duration is compatible. Otherwise the selected video is fetched through Civitai's API into FunCiv's cache. Compatibility is checked by duration; this is not proof that two videos contain identical frames. API account, site, or regional restrictions can make a clip unavailable.
+Index your existing video folder with **＋ Folder**. Matching HF entries reuse those videos immediately and retain HF categories, stars, review status and personal overrides. Adjacent scripts are reused only when every published axis matches its HF checksum.
+
+For linked videos, **Get HF scripts** downloads just the verified scripts; the bulk button covers linked videos allowed by the current rating/draft filters. It does not download videos or replace local sidecar edits. For an unlinked entry, **Download video + scripts** fetches the selected video through Civitai's API into FunCiv's cache. **Verify / refresh** rechecks an already ready entry. Compatibility is checked by duration; this is not proof that two videos contain identical frames. API account, site, or regional restrictions can make a clip unavailable.
 
 To use unchecked HF scripts, enable **Composer → Clip library → Filters → Include draft scripts (unreviewed)**, then select and resolve the variants you want. The choice is saved with each session and supports undo/redo. Drafts are excluded by default, including in older recipes without this setting. Assembly, manual replacement, preview, device preparation and export honor the choice. Turning it off keeps existing regions editable, pauses playback and requires excluded drafts to be replaced or explicitly allowed again. **Used in session** keeps affected clips visible.
 
@@ -101,7 +107,7 @@ HF's **Audio sync** marker is separate from folder categories, ratings and revie
 
 In **Clip / audio sync** and **Clip + marked gaps** sections, marked video regions use L0 strokes generated from the loaded song's tempo and energy, even if a stored clip script is present. Other axes stay neutral during those regions, with the configured blend at cuts. Neighboring unmarked regions keep their own scripts. **Analyze song** before preparing preview or exporting. Video cuts, source trims and speed remain editable; generated strokes stay aligned to song time. **Follow song** still generates motion for the entire section, while **Neutral hold** keeps all axes neutral. The current implementation uses the loaded song analysis; a separate beat-stem input is not yet wired into Composer.
 
-When sync changes a used clip's Audio sync label, Composer pauses and invalidates prepared motion. Saved asset bindings also detect changed labels; reassemble to adopt updated assets, then prepare again. A locally available marked video can generate song motion without fetching its stored scripts; unresolved videos still need **Resolve video + scripts**.
+When sync changes a used clip's Audio sync label, Composer pauses and invalidates prepared motion. Saved asset bindings also detect changed labels; reassemble to adopt updated assets, then prepare again. A locally available marked video can generate song motion without fetching its stored scripts; unlinked videos need their local folder indexed or **Download video + scripts**.
 
 ## Playback, devices, and temporary video
 
