@@ -109,6 +109,13 @@
 .fc-section-block.fc-selected{background:#51436d;border-color:#ba9ee8}
 #composer-container .fc-section-block button{display:block;width:100%;height:29px;text-align:left;padding:4px 8px!important;border:0;border-radius:0;background:transparent!important;overflow:hidden;text-overflow:ellipsis;font-size:11px!important}
 #composer-container .fc-section-block .fc-section-folder{height:25px;color:#c9c2dc;font-size:9px!important;border-top:1px solid #ffffff14}
+#composer-container .fc-section-handle{position:absolute;top:0;bottom:0;width:16px;transform:translateX(-50%);padding:0!important;border:0;border-inline:1px solid #b39edd88;border-radius:3px!important;background:#766091!important;color:#f6edff;font-size:22px!important;line-height:1;cursor:ew-resize;touch-action:none;z-index:5}
+#composer-container .fc-section-handle:hover,#composer-container .fc-section-handle.fc-active{background:#b494de!important;color:#181020}
+#composer-container .fc-section-handle:disabled{cursor:not-allowed}
+.fc-section-block{padding-inline:8px}.fc-section-block:first-child{padding-left:0}
+.fc-section-dragging,.fc-section-dragging *{cursor:ew-resize!important}
+.fc-section-guide{position:absolute;top:0;bottom:0;border-left:1px dashed #d9b8ff;pointer-events:none;z-index:4}
+.fc-section-guide[hidden]{display:none}.fc-section-guide output{position:absolute;top:1px;left:4px;background:#533c6a;color:#fff;padding:3px 6px;border-radius:3px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .fc-audio-markers{top:28px}
 .fc-placement-strip{height:54px}
 .fc-placement-strip .fc-unassembled{height:46px;border:1px dashed #465471!important;background:#141e2d!important;color:#8c9bb2;font-size:10px!important;text-overflow:ellipsis;overflow:hidden}

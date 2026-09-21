@@ -19,13 +19,13 @@ export class TimelineViewport {
     this.view=view;this.root=view.root;this.viewport=this.root.querySelector('.fc-timeline-viewport');this.track=this.root.querySelector('.fc-timeline');this.zoom=1;
     this.viewport.addEventListener('scroll',()=>this.draw(),{passive:true});
     this.viewport.addEventListener('wheel',event=>{
-      if(!view.session||view.regionEditor?.drag)return;
+      if(!view.session||view.regionEditor?.drag||view.sectionEditor?.drag)return;
       const unit=event.deltaMode===1?16:event.deltaMode===2?this.viewport.clientWidth:1;
       if(event.ctrlKey||event.metaKey){event.preventDefault();event.stopPropagation();this.setZoom(this.zoom*Math.exp(-event.deltaY*unit*.004),event.clientX-this.viewport.getBoundingClientRect().left);}
       else if(event.shiftKey||Math.abs(event.deltaX)>Math.abs(event.deltaY)){event.preventDefault();this.viewport.scrollLeft+=(event.deltaX||event.deltaY)*unit;}
     },{passive:false});
     this.viewport.addEventListener('pointerdown',event=>{
-      if(!view.session||event.button!==1&&(event.button!==0||!event.target.matches('.fc-wave,.fc-motion,.fc-ruler')))return;
+      if(!view.session||view.regionEditor?.drag||view.sectionEditor?.drag||event.button!==1&&(event.button!==0||!event.target.matches('.fc-wave,.fc-motion,.fc-ruler')))return;
       event.preventDefault();this.drag={id:event.pointerId,x:event.clientX,scroll:this.viewport.scrollLeft,pan:event.button===1};this.viewport.setPointerCapture(event.pointerId);
       this.viewport.classList.toggle('fc-panning',this.drag.pan);if(!this.drag.pan)view.setPosition(this.timeAt(event.clientX));
     });

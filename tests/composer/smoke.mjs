@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposerService } from '../../electron/composer-service.cjs';
 import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary } from './timeline-ui.mjs';
+import { checkSectionHandles, checkPopulatedSectionHandle } from './section-ui.mjs';
 
 const checkout=fileURLToPath(new URL('../..',import.meta.url));
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-electron-'));
@@ -106,6 +107,7 @@ try{
   assert.ok(await page.evaluate(()=>window.app.composer.player.audio.paused&&window.app.composer.position===0&&window.app.composer.player.audio.currentTime===0));
   console.log('PASS: audible song signal before analysis or assembly, play/pause, waveform and slider seek, volume, stop, and devices off.');
   await checkTimelineEditing(page,until);
+  await checkSectionHandles(page);
   assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080');
   const framing=()=>{const root=document.querySelector('#composer-container'),frame=root.querySelector('.fc-preview').getBoundingClientRect(),stage=root.querySelector('.fc-preview-stage').getBoundingClientRect();return {ratio:frame.width/frame.height,inside:frame.width<=stage.width&&frame.height<=stage.height+1,fits:[...root.querySelectorAll('.fc-preview video')].map(v=>getComputedStyle(v).objectFit)};};
   let frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-9/16)<.005&&frame.inside);assert.deepEqual(frame.fits,['cover','cover']);
@@ -188,6 +190,7 @@ try{
   console.log('PASS: ready/local/used views, rating sort, 4★+/5★ assembly, stale-preview rejection, manual ratings and persisted minimum.');
   await page.locator('.fc-section-row[data-section="0"] [data-action=select-section]').click({force:true});
   await chooseSectionFolders(page);
+  await checkPopulatedSectionHandle(page);
   const untouched=await page.evaluate(()=>{const s=window.app.composer.session;return s.placements.filter(p=>p.section_id!==s.sections[0].id).map(p=>p.id);});
   await page.evaluate(()=>window.app.composer.setPosition(200));await page.locator('[data-action=mark-in]').click({force:true});
   await page.evaluate(()=>window.app.composer.setPosition(800));await page.locator('[data-action=mark-out]').click({force:true});

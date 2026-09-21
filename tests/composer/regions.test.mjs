@@ -80,6 +80,23 @@ test('repeated section splits create independent sections with distinct chronolo
   assert.deepEqual(splitSongSection(custom,3000).sections.map(s=>s.label),['Section 9','Section 9 (2)'],'explicit user names are retained even when they resemble default names');
 });
 
+test('section boundaries resize empty layouts, retain no-op bindings and enforce neighboring limits',()=>{
+  const empty=createSession(song,3),id=empty.sections[0].id;
+  const resized=resizeSongSection(empty,id,2500,clips);
+  assert.deepEqual(resized.sections.map(s=>[s.start_ms,s.end_ms]),[[0,2500],[2500,4000],[4000,6000]]);
+  assert.deepEqual(resized.placements,[]);assert.doesNotThrow(()=>validateSession(resized));
+  const filled=arrange(empty,clips);filled.asset_bindings={fixture:'unchanged'};
+  assert.deepEqual(resizeSongSection(filled,id,2000,clips),filled,'returning to the original boundary does not split clips or clear bindings');
+  for(const at of [0,99,3901,4000,6000,2500.5,NaN])assert.throws(()=>resizeSongSection(empty,id,at,clips),/section boundary/);
+  for(const index of [0,1]){const locked=structuredClone(empty);locked.sections[index].locked=true;assert.throws(()=>resizeSongSection(locked,id,2500,clips),/Unlock both/);}
+  empty.sections[0].categories=['A'];empty.sections[1].categories=['B'];
+  const placed=arrange(empty,clips),changed=resizeSongSection(placed,id,2500,clips);
+  assert.equal(changed.placements.find(p=>p.start_ms===2000).clip_id,null,'incompatible transferred footage becomes an empty region');
+  assert.equal(changed.placements.find(p=>p.start_ms===2500).source_in_ms,500,'remaining footage preserves source continuity');
+  assert.deepEqual(changed.placements.filter(p=>p.start_ms>=4000),placed.placements.filter(p=>p.start_ms>=4000));
+  assert.doesNotThrow(()=>validateSession(changed,clips));
+});
+
 test('audio cuts use beat groups and texture changes; silence does not invent verse labels',()=>{
   const analysis={duration_ms:20000,bpm:120,beats:Array.from({length:40},(_,i)=>({at:i*500})),features:{energy:Array.from({length:200},(_,i)=>i<100?.1:.9),brightness:Array.from({length:200},(_,i)=>i<100?.1:.7),bass:Array(200).fill(.2)}};
   const markers=audioChangeMarkers(analysis);assert.ok(markers.some(p=>Math.abs(p.at-10000)<500));

@@ -131,7 +131,7 @@ export class RegionEditor {
   }
   pauseSource(){this.root.querySelector('[data-source-preview]')?.pause();}
   beginDrag(event){
-    const edge=event.target.closest('[data-region-edge]'),source=event.target.closest('[data-source-drag]');if((!edge&&!source)||event.button!==0||event.target.disabled)return;
+    const edge=event.target.closest('[data-region-edge]'),source=event.target.closest('[data-source-drag]');if((!edge&&!source)||event.button!==0||event.target.disabled||this.view.sectionEditor.drag)return;
     const v=this.view,id=edge?.dataset.regionId||source.dataset.sourceDrag,p=v.session?.placements.find(p=>p.id===id);if(!p)return;
     event.preventDefault();this.pauseSource();v.invalidate();v.inspectorMode='clip';v.selectedPlacement=id;v.selected=v.session.sections.findIndex(s=>s.id===p.section_id);
     const rect=(edge?this.root.querySelector('.fc-placement-strip'):this.root.querySelector('.fc-source-rail')).getBoundingClientRect();

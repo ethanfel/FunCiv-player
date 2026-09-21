@@ -5,6 +5,7 @@ import { ComposerDeviceSession } from './device-session.js';
 import { RegionEditor, REGION_TOOLS } from './region-editor.js';
 import { TimelineViewport, TIMELINE_TOOLS } from './timeline-viewport.js';
 import { ClipLibrary } from './clip-library.js';
+import { SectionEditor } from './section-editor.js';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
@@ -46,7 +47,7 @@ export class ComposerView {
           ${REGION_TOOLS}
           ${TIMELINE_TOOLS}
           <div class="fc-selection-bar">Select a song section to choose its folders.</div>
-          <div class="fc-timeline-viewport"><div class="fc-timeline"><div class="fc-audio-markers"></div><canvas class="fc-ruler" height="28" aria-label="Song time ruler"></canvas><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-track-label">Song sections · each has its own folder choices</div><div class="fc-section-strip"></div><div class="fc-track-label">Clip regions · smaller cuts inside song sections</div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="64" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div></div>
+          <div class="fc-timeline-viewport"><div class="fc-timeline"><div class="fc-audio-markers"></div><canvas class="fc-ruler" height="28" aria-label="Song time ruler"></canvas><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-track-label">Song sections · drag purple dividers to resize · folders below</div><div class="fc-section-strip"></div><div class="fc-track-label">Clip regions · smaller cuts inside song sections</div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="64" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div></div>
           <div class="fc-editbar"><button data-action="undo">↶ Undo</button><button data-action="redo">↷ Redo</button><button data-action="split" title="Create two independent song sections at the playhead, each with its own folders">Split song section</button><button data-action="merge">Merge song sections</button><span class="fc-spacer"></span><button data-action="assemble" class="fc-primary">Assemble</button><button data-action="variation">New variation</button></div>
           <div class="fc-sections"></div>
           <div class="fc-footer"><div class="fc-summary">Choose a song to build your timeline.</div><div class="fc-actions"><button data-action="prepare">Prepare preview</button><button data-action="devices">Prepare device sync</button><button data-action="render" class="fc-primary">Render temporary video</button></div></div>
@@ -67,13 +68,14 @@ export class ComposerView {
     this.resizeObserver=new ResizeObserver(()=>this.draw());this.resizeObserver.observe(this.root);
     this.regionEditor=new RegionEditor(this);
     this.timeline=new TimelineViewport(this);this.clipLibrary=new ClipLibrary(this);
+    this.sectionEditor=new SectionEditor(this);
     this.root.querySelector('[data-field=zoom-slider]').addEventListener('input',event=>this.timeline.setZoom(2**Number(event.target.value)));
     this.renderOutput();
     window.addEventListener('beforeunload',event=>{if(this.dirty){event.preventDefault();event.returnValue='';}});
   }
   ipc(action,payload){return window.funsync.composer(action,payload);}
   async show(){this.visible=true;await this.refresh();this.renderEditor();}
-  hide(){this.visible=false;this.timeline.finishDrag();this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
+  hide(){this.visible=false;this.timeline.finishDrag();this.sectionEditor.finishDrag(true);this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
   message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
   async refresh(){
     const oldMotion=new Map(this.catalog.clips.map(c=>[c.id,isAudioSyncClip(c)]));
@@ -296,13 +298,17 @@ export class ComposerView {
     if(!s.placements.some(p=>p.id===this.selectedPlacement&&p.section_id===s.sections[this.selected].id))this.selectedPlacement=null;
     this.root.querySelector('.fc-song-title').textContent=`${s.name} · ${stamp(s.song.duration_ms)}`;
     this.root.querySelector('[data-field=seek]').max=s.song.duration_ms;
+    this.renderSections();this.regionEditor.renderTrack();
+    this.root.querySelector('.fc-summary').textContent=`${s.sections.length} sections · ${s.placements.length} cuts · variation ${s.seed}${this.dirty?' · unsaved changes':''}`;
+    this.renderInspector();this.draw();
+  }
+  renderSections(){
+    const s=this.session;if(!s)return;
     const selectedSection=s.sections[this.selected],pool=sectionCategories(selectedSection).join(', ')||'Any folder';
     this.root.querySelector('.fc-selection-bar').innerHTML=`<div><small>SELECTED SONG SECTION ${this.selected+1}</small><strong>${esc(selectedSection.label)}</strong><span>${stamp(selectedSection.start_ms)} – ${stamp(selectedSection.end_ms)}</span></div><button data-action="section-folders" data-id="${esc(selectedSection.id)}" title="Choose folders for this section">Folders: ${esc(pool)} <span>✎</span></button>`;
     this.root.querySelector('.fc-section-strip').innerHTML=s.sections.map((section,i)=>`<div class="fc-section-block ${i===this.selected?'fc-selected':''}" style="left:${section.start_ms/s.song.duration_ms*100}%;width:${(section.end_ms-section.start_ms)/s.song.duration_ms*100}%"><button data-action="select-section" data-index="${i}" title="Song section ${i+1}: ${esc(section.label)} · ${stamp(section.start_ms)}–${stamp(section.end_ms)}">${esc(section.label)}</button><button class="fc-section-folder" data-action="section-folders" data-id="${esc(section.id)}" title="Choose folders for ${esc(section.label)}">${esc(sectionCategories(section).join(', ')||'Choose folders · any')}</button></div>`).join('');
-    this.regionEditor.renderTrack();
     this.root.querySelector('.fc-sections').innerHTML=s.sections.map((section,i)=>`<div class="fc-section-row ${i===this.selected?'fc-selected':''}" data-section="${i}"><button class="fc-section-select" data-action="select-section" data-index="${i}"><span>${String(i+1).padStart(2,'0')}</span><strong>${esc(section.label)}</strong><span>${stamp(section.start_ms)} – ${stamp(section.end_ms)}</span></button><button class="fc-folders-button" data-action="section-folders" data-id="${esc(section.id)}" title="Change folder choices">Folders: ${esc(sectionCategories(section).join(', ')||'Any')}</button><span>${esc(policies.find(([id])=>id===section.motion)?.[1])}</span><span>${section.locked?'Locked':section.strength+'%'}</span></div>`).join('');
-    this.root.querySelector('.fc-summary').textContent=`${s.sections.length} sections · ${s.placements.length} cuts · variation ${s.seed}${this.dirty?' · unsaved changes':''}`;
-    this.renderInspector();this.draw();
+    this.sectionEditor.renderHandles();
   }
   renderInspector(){
     if(!this.session)return;const s=this.session,section=s.sections[this.selected];

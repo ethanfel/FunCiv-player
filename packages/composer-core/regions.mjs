@@ -122,6 +122,7 @@ export function resizeSongSection(session,sectionId,at,clips){
   const next=structuredClone(session),index=next.sections.findIndex(s=>s.id===sectionId),before=next.sections[index],after=next.sections[index+1];
   if(!before||!after||!Number.isInteger(at)||at-before.start_ms<MIN_REGION_MS||after.end_ms-at<MIN_REGION_MS)throw new Error('Choose a section boundary inside these two sections.');
   if(before.locked||after.locked)throw new Error('Unlock both sections before moving their shared boundary.');
+  if(at===before.end_ms)return next;
   const a=sectionRegions(next,before),b=sectionRegions(next,after);
   if(a.length||b.length){
     if(!a.length)next.placements.push(emptyRegion(before,before.start_ms,before.end_ms));
