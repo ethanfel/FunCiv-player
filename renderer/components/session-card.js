@@ -23,6 +23,7 @@ const STATE_KEYS = {
 };
 
 const SOURCE_KEYS = {
+  'composer': 'session.source.composer',
   'web-remote': 'session.source.web-remote',
   'vr':         'session.source.vr',
 };

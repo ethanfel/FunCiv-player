@@ -68,7 +68,7 @@ const DEFAULTS = {
       _localeOfferedFor: null,
     },
     backend: {
-      port: 5123,
+      port: 5124,
       localIp: 'auto',
     },
     library: {

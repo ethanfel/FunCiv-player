@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Audience Room"
   },
   "nav": {
+    "composer": "Composer",
     "library": "Library",
     "playlists": "Playlists",
     "categories": "Categories",
@@ -1445,7 +1446,8 @@
     },
     "source": {
       "web-remote": "Web Remote",
-      "vr": "VR Companion"
+      "vr": "VR Companion",
+      "composer": "Composer"
     },
     "card": {
       "showAria": "Show session card",

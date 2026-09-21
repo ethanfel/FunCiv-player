@@ -19,7 +19,7 @@ const SETTINGS_DEFAULTS = {
     recentFiles: [],
   },
   backend: {
-    port: 5123,
+    port: 5124,
     localIp: 'auto',
   },
   library: {

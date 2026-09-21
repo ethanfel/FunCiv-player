@@ -6,6 +6,7 @@ import { Modal } from './modal.js';
 import { t } from '../js/i18n.js';
 
 const SOURCE_KEYS = {
+  'composer': 'session.source.composer',
   'web-remote': 'session.source.web-remote',
   'vr':         'session.source.vr',
 };

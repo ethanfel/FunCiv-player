@@ -1,6 +1,7 @@
 // FunSync Player — App Entry Point
 
 import { VideoPlayer, PLAYBACK_RATE_PRESETS } from './video-player.js';
+import { ComposerView } from '../composer/composer-view.js';
 import { eventBus } from './event-bus.js';
 import { ProgressBar } from './progress-bar.js';
 import { FunscriptEngine, isAutoMatch, stripBOM } from './funscript-engine.js';
@@ -826,7 +827,7 @@ class App {
       // Initialize Web Remote bridge — observer WebSocket to the local backend.
       // Auto-connects and reconnects; no UI-surfaced failure.
       try {
-        const backendPort = this.settings.get('backend.port') || 5123;
+        const backendPort = this.backendPort || 5124;
         this.remoteBridge = new RemoteBridge({ port: backendPort });
         this._wireRemoteBridge();
         this.remoteBridge.onBridgeOpen = () => console.log('[Remote] observer bridge connected');
@@ -1192,8 +1193,8 @@ class App {
         this._autoConnectHandy(savedKey);
       }
 
-      // Auto-connect to Buttplug/Intiface if previously used
-      if (this.buttplugManager) {
+      // A fresh FunCiv profile connects devices explicitly from the panel.
+      if (this.buttplugManager && this.settings.get('buttplug.autoConnect') === true) {
         this._autoConnectButtplug();
       }
 
@@ -2283,7 +2284,7 @@ class App {
       const { evicted, incoming } = e.detail || {};
       if (!evicted) return;
 
-      const sourceLabel = (src) => src === 'web-remote' ? t('session.source.web-remote') : t('session.source.vr');
+      const sourceLabel = (src) => t(`session.source.${src}`);
       showToast(
         t('toast.mutexTakeover', {
           incoming: sourceLabel(incoming?.source),
@@ -2293,7 +2294,10 @@ class App {
         4000,
       );
 
-      if (evicted.source === 'vr') {
+      if (evicted.source === 'composer') {
+        this.composer?.player.pause();
+        this.composer?.devices.release();
+      } else if (evicted.source === 'vr') {
         // VR companion loses — stop its sync, disconnect the bridge so the
         // user reconnects from the VR panel deliberately.
         this._stopVRSync();
@@ -2847,7 +2851,7 @@ class App {
   async _pollRescanRequest() {
     if (!this.library) return;
     try {
-      const port = this.settings.get('backend.port') || 5123;
+      const port = this.backendPort || 5124;
       const res = await fetch(`http://127.0.0.1:${port}/api/media/rescan-request`);
       if (!res.ok) return;
       const data = await res.json();
@@ -2898,7 +2902,7 @@ class App {
     if (this.vrBridge.connected) return;
 
     try {
-      const port = this.settings.get('backend.port') || 5123;
+      const port = this.backendPort || 5124;
       const res = await fetch(`http://127.0.0.1:${port}/api/media/vr-activity`);
       if (!res.ok) return;
       const data = await res.json();
@@ -3113,6 +3117,7 @@ class App {
    * @returns {object|null} null when filler should not run
    */
   _fillerOptionsForUpload() {
+    if (this.composer?.devices.active) return null; // Composer already resolved its marked gaps.
     const filler = this.settings?.get?.('player.gapFiller') || {};
     if (!filler.enabled) return null;
 
@@ -3141,6 +3146,7 @@ class App {
    * @returns {'started'|'busy'|'no-devices'}
    */
   _startFillerTest(actions, { onProgress, onEnd } = {}) {
+    if (this.composer?.devices.active) return 'busy';
     if (!this._fillerTest) {
       this._fillerTest = new FillerTestPlayer({
         buttplugSync: this.buttplugSync,
@@ -5048,6 +5054,7 @@ class App {
   _getViewEl(viewId) {
     const map = {
       'library': document.getElementById('library-container'),
+      'composer': document.getElementById('composer-container'),
       'player': document.getElementById('player-container'),
       'playlists': document.getElementById('playlists-container'),
       'categories': document.getElementById('categories-container'),
@@ -5072,7 +5079,7 @@ class App {
     // keep the player container visible (it floats as a fixed corner
     // overlay over the target view) unless we're navigating INTO the
     // player, which expands it back to full and clears mini mode.
-    for (const vid of ['library', 'player', 'playlists', 'categories']) {
+    for (const vid of ['library', 'player', 'playlists', 'categories', 'composer']) {
       if (vid === 'player' && this._miniActive && viewId !== 'player') continue;
       const el = this._getViewEl(vid);
       if (el) el.hidden = true;
@@ -5145,7 +5152,13 @@ class App {
       this.navBar.setActive(viewId);
     }
 
-    if (viewId === 'library') {
+    if (viewId === 'composer') {
+      this.videoPlayer.pause();
+      this._clearMiniplayer();
+      this._getViewEl('player').hidden = true;
+      if (!this.composer) this.composer = new ComposerView(this, this._getViewEl('composer'));
+      this.composer.show().catch(error => this.composer.message(error.message, true));
+    } else if (viewId === 'library') {
       // Recheck source availability before showing (drive may have been disconnected)
       this._refreshCollectionsUI().then(() => {
         this.library.show(this._getViewEl('library'));
@@ -5163,7 +5176,9 @@ class App {
 
   /** Hook called when leaving a view. */
   _onLeaveView(viewId) {
-    if (viewId === 'player') {
+    if (viewId === 'composer') {
+      this.composer?.hide();
+    } else if (viewId === 'player') {
       // Drop OS fullscreen FIRST, before any of the branches below. Leaving
       // the player while fullscreen otherwise left the container as
       // `document.fullscreenElement`, so it kept filling the display no

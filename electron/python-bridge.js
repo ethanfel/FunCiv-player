@@ -4,7 +4,7 @@ const http = require('http');
 const log = require('./logger');
 
 let pythonProcess = null;
-let backendPort = 5123;
+let backendPort = 5124;
 
 // --- Health monitor ---
 //
@@ -43,73 +43,11 @@ let healthConsecutiveFailures = 0;
 let healthIntervalHandle = null;
 let healthListener = null;     // callback: (state, detail) => void
 
-/**
- * Kill anything currently holding `port` so we don't fight an orphan backend
- * from a previous session. Cross-platform best-effort: swallows errors, logs
- * what it killed. Called on both startBackend (defensive) and stopBackend
- * (catches children that taskkill/SIGKILL on the parent PID missed).
- */
-function killProcessesOnPort(port) {
-  try {
-    if (process.platform === 'win32') {
-      // Find PIDs in LISTENING state on the given port.
-      const output = execSync(`netstat -ano -p tcp`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-      const pids = new Set();
-      for (const line of output.split(/\r?\n/)) {
-        // "  TCP    0.0.0.0:5123    0.0.0.0:0    LISTENING   12345"
-        if (!line.includes('LISTENING')) continue;
-        if (!line.includes(`:${port} `) && !line.endsWith(`:${port}`)) continue;
-        const parts = line.trim().split(/\s+/);
-        const pid = parts[parts.length - 1];
-        if (/^\d+$/.test(pid) && pid !== '0') pids.add(pid);
-      }
-      for (const pid of pids) {
-        try {
-          execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
-          log.info(`[Backend] killed orphan PID ${pid} holding port ${port}`);
-        } catch { /* already gone */ }
-      }
-    } else {
-      // Unix: try lsof → ss → fuser in order. lsof is the cleanest output
-      // but isn't installed by default on every distro (e.g. minimal
-      // Debian, NixOS, some container images). ss (iproute2) and fuser
-      // (psmisc) are near-universal fallbacks.
-      const pids = new Set();
-      for (const { cmd, parse } of [
-        {
-          cmd: `lsof -ti tcp:${port}`,
-          parse: out => out.trim().split(/\s+/).filter(Boolean),
-        },
-        {
-          cmd: `ss -ltnp 'sport = :${port}'`,
-          // "... users:(("uvicorn",pid=12345,fd=3))"
-          parse: out => Array.from(out.matchAll(/pid=(\d+)/g), m => m[1]),
-        },
-        {
-          cmd: `fuser -n tcp ${port} 2>/dev/null`,
-          parse: out => out.trim().split(/\s+/).filter(s => /^\d+$/.test(s)),
-        },
-      ]) {
-        try {
-          const out = execSync(cmd, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-          for (const pid of parse(out)) pids.add(pid);
-          if (pids.size > 0) break;
-        } catch { /* tool missing or no match — try next */ }
-      }
-      for (const pid of pids) {
-        try {
-          process.kill(parseInt(pid, 10), 'SIGKILL');
-          log.info(`[Backend] killed orphan PID ${pid} holding port ${port}`);
-        } catch { /* already gone */ }
-      }
-    }
-  } catch { /* all tools failed — nothing to do */ }
-}
-
-async function startBackend() {
-  // Defensive: clear any stale backend from a previous session (crash / kill -9)
-  // that would otherwise make uvicorn fail with "address in use".
-  killProcessesOnPort(backendPort);
+async function startBackend({ reusePort = false } = {}) {
+  if (pythonProcess) return;
+  const selectedPort = await require('./owned-backend-port').availablePort(backendPort);
+  if (reusePort && selectedPort !== backendPort) throw new Error('The backend port was taken by another process. Restart FunCiv to choose a new port.');
+  backendPort = selectedPort;
 
   return new Promise((resolve, reject) => {
     const fs = require('fs');
@@ -163,7 +101,7 @@ async function startBackend() {
     if (bundledBackend && fs.existsSync(bundledBackend)) {
       // Production: use PyInstaller-bundled executable
       cmd = bundledBackend;
-      args = ['--port', String(backendPort), '--user-data-dir', userDataDir];
+      args = ['--port', String(backendPort), '--host', '127.0.0.1', '--user-data-dir', userDataDir];
       cwd = path.dirname(bundledBackend);
     } else {
       // Development: use venv Python or system Python
@@ -171,10 +109,10 @@ async function startBackend() {
         ? path.join(backendDir, '.venv', 'Scripts', 'python.exe')
         : path.join(backendDir, '.venv', 'bin', 'python');
 
-      cmd = fs.existsSync(venvPython)
+      cmd = process.env.FUNCIV_PYTHON || (fs.existsSync(venvPython)
         ? venvPython
-        : (process.platform === 'win32' ? 'python' : 'python3');
-      args = ['main.py', '--port', String(backendPort), '--user-data-dir', userDataDir];
+        : (process.platform === 'win32' ? 'python' : 'python3'));
+      args = ['main.py', '--port', String(backendPort), '--host', '127.0.0.1', '--user-data-dir', userDataDir];
       cwd = backendDir;
     }
 
@@ -186,6 +124,7 @@ async function startBackend() {
 
     let started = false;
 
+    const ownedProcess = pythonProcess;
     pythonProcess.stdout.on('data', (data) => {
       const output = data.toString();
       log.info(`[Backend] ${output}`);
@@ -216,7 +155,7 @@ async function startBackend() {
 
     pythonProcess.on('close', (code) => {
       log.info(`Python backend exited with code ${code}`);
-      pythonProcess = null;
+      if (pythonProcess === ownedProcess) pythonProcess = null;
       if (!started) {
         started = true;
         resolve();
@@ -245,7 +184,7 @@ function stopBackend() {
         execSync(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore' });
       } else if (pid) {
         // Kill process group on Linux (spawned with detached: true)
-        process.kill(-pid, 'SIGKILL');
+        process.kill(-pid, 'SIGTERM');
       }
     } catch {
       // Process may already be dead
@@ -253,10 +192,7 @@ function stopBackend() {
     pythonProcess = null;
   }
 
-  // Belt-and-braces: sweep anything still holding the backend port. Covers
-  // detached children, stale processes from earlier sessions, and the case
-  // where taskkill on a parent didn't propagate to its uvicorn worker.
-  killProcessesOnPort(backendPort);
+
 }
 
 function getBackendPort() {
@@ -361,11 +297,16 @@ function stopHealthMonitor() {
 async function restartBackend() {
   _emitHealthState('restarting', 'user-initiated');
   stopHealthMonitor();
+  const ownedProcess = pythonProcess;
+  const closed = ownedProcess && ownedProcess.exitCode === null
+    ? new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('The previous backend is still shutting down. Try again shortly.')), 5000);
+      ownedProcess.once('close', () => { clearTimeout(timer); resolve(); });
+    }) : Promise.resolve();
   stopBackend();
-  // Brief breather to let the OS reap the killed PID before respawn —
-  // Windows in particular can take a moment to release the port.
-  await new Promise(r => setTimeout(r, 500));
-  await startBackend();
+  await closed;
+  // Renderer services retain this port for the lifetime of the window.
+  await startBackend({ reusePort: true });
   startHealthMonitor();
   // First probe after restart — if it succeeds, the next interval tick
   // will emit 'running'. If it fails, threshold logic kicks in.

@@ -1,206 +1,86 @@
-# FunSync Player
+# FunCiv Player
 
-A local desktop video player with device synchronization for funscript playback. Built with Electron. Windows and Linux.
+Compose a session from **a song → sections → categories → video clips and synchronized motion**. Preview the assembled timeline live or render a disposable MP4 with six matching funscripts.
 
-**[Download Latest Release](https://github.com/DaveMakesWaves/funsync-player/releases/latest)**
+This is an early working fork of [FunSync Player](https://github.com/DaveMakesWaves/funsync-player). It adds a **Composer** workspace and reuses the player, device transports, and selected audio/curve algorithms from [ComfyUI-Sam3D-to-Funscript](https://github.com/ethanfel/ComfyUI-Sam3D-to-Funscript). The original Library, Playlists, Categories, and video player remain available.
 
----
+![Composer with synthetic test media](docs/composer-implemented.png)
 
-## Features
+## Run locally
 
-### Video Player
-- Full-featured player with custom controls, keyboard shortcuts, and drag-and-drop
-- Seek bar thumbnail preview (live frame capture on hover)
-- Subtitle support (.srt, .vtt) with automatic SRT to WebVTT conversion
-- Screenshot capture, picture-in-picture, aspect ratio cycling
-- A-B loop points for repeat sections
-- Replay button when video ends
-- Script gap auto-skip with configurable countdown or skip button
-
-### Library
-- Browse and organize your video collection from one or more source folders
-- **Grid / list / folder-tree** view toggle with thumbnail cards and live hover preview
-- Drag-to-reorder sources, per-source enable/disable, overlap detection, hot-plug drive detection
-- Funscript auto-pairing by filename with auto/manual badges; subtitle auto-detection
-- Fuzzy search with exact-title precedence, path + collection + category matching, diacritic folding
-- Sort by name, duration, average speed, max speed (matched tab only)
-- Playlists, categories, and collections with pin-folder-as-collection support
-- Multi-select for bulk playlist/category assignment
-- Script variant detection — auto-detects multiple funscript versions per video
-
-### Remote access
-- **Web Remote** — control FunSync from your phone on the same WiFi. Library, playback, device sync. Installable as a PWA from the phone's home screen.
-- **VR content server** — Quest standalone support via HereSphere. Your library appears in the headset; PC-connected devices sync automatically.
-- **PCVR companion bridge** — HereSphere on PC (SteamVR, Virtual Desktop) driven via its timestamp API; all devices follow.
-- **Session status card** docks bottom-right when an external source is driving playback, with a 50-entry history viewer and a VR ↔ Web Remote last-wins mutex.
-
-### EroScripts Integration
-- Search and download community funscripts from within the app
-- Login with 2FA support (authenticator app), persistent session
-- Thumbnails and metadata in search results
-- One-click download — scripts auto-renamed, auto-associated, and paired with the current video
-- Auto-match on video load — if no script is found locally, silently searches EroScripts and notifies
-
-### Funscript Support
-- Heatmap overlay on the seek bar (speed-colored)
-- Gap indicators on the seek bar showing idle sections
-- Manual funscript association with fuzzy-ranked suggestions
-- Script variations — switch between multiple script versions during playback (V key)
-- Multi-axis funscript support (TCode convention, 10 axes)
-- **Custom routing** — assign different scripts to different devices per video, stable across Intiface restarts (index-first matching with name auto-heal)
-- Speed stats (average/max) displayed on library cards
-
-### Script Smoothing
-- PCHIP interpolation (shape-preserving, no overshoot) for smoother device motion
-- Makima interpolation (less aggressive, good for oscillatory patterns)
-- Configurable speed limit to prevent impossible device moves
-- Per-setting persistence — configure once, applies to all playback
-
-### Device Integration
-- **The Handy** — HSSP cloud sync with automatic script upload, drift detection, 10-second cloud health check (catches BT-mode switches)
-- **Buttplug.io** — Connect to 700+ devices via Intiface Central (strokers, vibrators, rotators, e-stim)
-- **TCode serial (OSR2 / SR6)** — USB serial with per-axis enable + min/max controls for all 10 axes (experimental)
-- **Autoblow Ultra / VacuGlide 2** — Cloud API (experimental)
-- **Auto-connect on startup** — Handy and Buttplug.io connect automatically if previously configured
-- Per-device offset controls + unified Sync tab showing total effective offset (VR + device stacking)
-- Device simulator overlay showing real-time stroke position
-- Works without any device connected — pure video playback is fully functional
-
-### Script Editor (Experimental)
-- OFS-style action graph with centered playhead and speed-colored lines
-- Numpad placement (0-9 maps to position 0-100), frame-by-frame stepping, snap-to-frame toggle
-- Selection, copy/paste, undo/redo (per-script history persistence)
-- Multi-script selector for multi-axis / custom-routing editing
-- Modifier tools: half/double speed, remap range, offset time, remove pauses, reverse
-- Pattern generator: sine, sawtooth, square, triangle, escalating, random
-- Gap detection and fill with configurable patterns
-- Audio waveform display and beat detection for music-synced scripting
-- Metadata editor (title, creator, tags, performers)
-- Bookmarks with named markers on the graph
-- Live device preview on numpad placement (when sync engine is idle)
-- Autosave toggle (off by default, shows save timestamp when enabled)
-
-### Multi-Axis Support (Experimental)
-- TCode convention detection (10 standard axes)
-- Companion file detection by filename suffix
-- Axis-to-device feature mapping
-- Searchable dropdowns for axis assignment with fuzzy matching
-
-### Data
-- Settings, playlists, and categories stored locally (no cloud, no account)
-- Export/import backups as .funsync-backup zip files
-- Automatic updates — notified when a new version is available; **you control download AND install** (no silent install on app quit)
-- All user data preserved across updates
-
----
-
-## Install
-
-1. Download the latest installer from the [Releases page](https://github.com/DaveMakesWaves/funsync-player/releases/latest)
-   - **Windows**: `FunSync Player Setup X.Y.Z.exe`
-   - **Linux**: `FunSync-Player-X.Y.Z.AppImage`
-2. Run the installer / AppImage
-   - Windows: no admin required, installs per-user
-   - Linux: `chmod +x` the AppImage, then run
-3. The app launches automatically
-
-Updates are checked on startup. When a new version is available, a toast appears — click Download, then Restart Now when ready.
-
----
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| Space / K | Play / Pause / Replay |
-| Left / Right | Seek 5s |
-| J / L | Seek 10s |
-| Up / Down | Volume |
-| M | Mute |
-| F / F11 | Fullscreen |
-| O | Open file |
-| H | Device panel |
-| S | Screenshot |
-| I | Info overlay |
-| A / B | Loop points |
-| Escape | Clear loop / close panels |
-| R | Cycle aspect ratio |
-| E | Toggle script editor |
-| D | Toggle device simulator |
-| V / Shift+V | Cycle script variants |
-| G / Shift+G | Skip to next/previous action |
-
-### Script Editor (when canvas focused)
-
-| Key / Mouse | Action |
-|-------------|--------|
-| 0-9 / Numpad 0-9 | Place action at current playhead (positions 0, 11, 22, ..., 100) |
-| Alt+Click on empty canvas | Insert action at click position |
-| Left / Right | Step one video frame |
-| Ctrl+Left / Right | Fast frame step (default 6 — `editor.fastStepFrames`) |
-| Shift+Left / Right | Move selected action(s) ±1 frame in time |
-| Ctrl+Shift+Left / Right | Move selected action(s) ±N frames in time |
-| Up / Down | Select previous / next action (with seek) |
-| Ctrl+Up / Down | Select previous / next action across all loaded scripts |
-| Shift+Up / Down | Nudge selected position ±5 (coarse) |
-| Ctrl+Shift+Up / Down | Nudge selected position ±1 (fine) |
-| Delete / Backspace | Delete selected actions |
-| Ctrl+Z / Ctrl+Y | Undo / Redo |
-| Ctrl+C / V / X | Copy / Paste / Cut |
-| Ctrl+A | Select all |
-| Ctrl+I | Invert positions |
-| Ctrl+S | Save |
-| W | Toggle audio waveform overlay |
-| B | Add bookmark at current time |
-| +/- | Zoom in / out |
-| Escape | Clear selection / close editor |
-
-When placing actions: press numpad without moving the playhead to refine the just-placed action's height; seek the playhead before pressing numpad to place a new action at the new time.
-
----
-
-## Requirements
-
-- Windows 10/11 (x64) or Linux (AppImage — Ubuntu 22+, Fedora 38+, SteamOS)
-- [Intiface Central](https://intiface.com/central/) for Buttplug.io device support (optional)
-
----
-
-## Building from Source
+Requires Node.js 22.15+ (tested with 24), Python 3.10+, FFmpeg and FFprobe on `PATH`, and a desktop environment for Electron. On this workstation, dependencies have already been installed in this checkout.
 
 ```bash
-npm install
-cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt && cd ..
-npm run build
+cd /media/p5/FunCiv-player
+npm start
 ```
 
-Requires Node.js 18+, Python 3.11+, and ffmpeg/ffprobe binaries in the `ffmpeg/` directory (or `ffmpeg-linux/` for Linux).
+For a fresh checkout:
 
----
-
-## License
-
-FunSync Player is free software, licensed under the **GNU General Public License v3.0 or later**. The full text is in [LICENSE](LICENSE).
-
-You are free to use, study, share and modify it. If you distribute a modified version, it must also be released under the GPL with its source available, so improvements stay available to everyone.
-
-```
-Copyright (C) 2026 DaveMakesWaves
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```bash
+npm ci
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+npm start
 ```
 
-### Packaging
+On Windows, use `backend\.venv\Scripts\python.exe` for the Python commands. `FUNCIV_PYTHON` can select a different interpreter. If your npm policy suppresses Electron's install script, run `node node_modules/electron/install.js` once after `npm ci`.
 
-Distribution packages are welcome. The GPL permits redistribution of both source and binaries, so no separate permission is needed to package FunSync for a distro repository.
+FunCiv uses its own `funciv-player` application data directory. It starts its backend on loopback port 5124, choosing an available port if occupied. It does not terminate another application's server or import your existing FunSync settings. `FUNCIV_USER_DATA` overrides the data directory for development. Automatic binary updates are disabled until this fork has a tested release feed.
+
+## Make a session
+
+1. Open **Composer**, then **Load song**. Audio is converted once to a cached stereo 48 kHz WAV. Recent imported songs are reusable.
+2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Change a clip's category directly in the library.
+3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections; rename them, change an end time, or click the waveform and use **Split at playhead** / **Merge next**.
+4. Select each section and choose its category and motion policy:
+   - **Clip motion:** use the clip's existing script.
+   - **Follow song:** generate L0 motion from the song's tempo and energy, including when the clip has no script.
+   - **Clip + marked gaps:** replace only the ranges you explicitly mark with song motion.
+   - **Neutral hold:** keep all axes at their neutral position.
+5. Click **Assemble**. **New variation** changes unlocked choices; **Keep clips on variation** retains a section's placements. Click a clip on the timeline to replace it or adjust its source start and speed. Invalid source ranges are rejected.
+6. **Prepare preview**, then **Play**. The song is the master clock; two muted video decoders prepare consecutive cuts. A decoder stall pauses the audio clock. Editing pauses playback and invalidates its prepared snapshot. Undo/redo is available.
+7. **Save session** keeps the recipe, song analysis, and asset bindings. Reopening a saved recipe rejects changed media/scripts until you deliberately reassemble.
+
+Adjacent scripts use the same stem as the video: `clip.funscript` (L0), `clip.surge.funscript` (L1), `clip.sway.funscript` (L2), `clip.twist.funscript` (R0), `clip.roll.funscript` (R1), and `clip.pitch.funscript` (R2). Missing secondary axes stay neutral. Hidden folders and symlinks are excluded from recursive scans; ComfyUI's hidden review staging can be selected explicitly as a folder if needed.
+
+## FunCiv Data and Civitai
+
+**Sync FunCiv Data** imports the public [dataset catalog](https://huggingface.co/datasets/ethanfel/FunCiv-Data). The client pins a full repository commit and verifies the catalog and requested scripts against their SHA-256 values. It does not download the whole video library.
+
+Use **API settings** to choose `civitai.com`, `civitai.red`, or `civitaired.com`. An optional API key is stored with Electron's system credential encryption; unsupported plaintext storage is rejected. Alternatively set `CIVITAI_API_TOKEN` in the launching environment. The key is used for the metadata API and is not forwarded to media downloads or redirected endpoints.
+
+Click **Resolve video + scripts** on a variant to fetch its verified axes. An indexed local video with a matching Civitai ID is reused when its duration is compatible. Otherwise the selected video is fetched through Civitai's API into FunCiv's cache. Compatibility is checked by duration; this is not proof that two videos contain identical frames. API account, site, or regional restrictions can make a clip unavailable.
+
+Draft scripts are excluded until **Include draft scripts** is enabled. Categories are local editorial tags; the dataset currently does not provide a category taxonomy. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
+
+## Playback, devices, and temporary video
+
+Preview defaults to devices off. Connect a device through FunSync's **Devices** panel, then click **Prepare device sync** in Composer. The adapter reuses the configured Handy, Buttplug, TCode, or Autoblow transports. Compiled secondary axes feed the multi-axis engines. Stop, editing, leaving Composer, or a VR/Web Remote source takeover releases the Composer binding. Cloud uploads are serialized to prevent an older pending upload from replacing a newer source's script.
+
+**Render temporary video** creates a 1280×720, 30 fps H.264/AAC MP4, six same-stem scripts, and a provenance/checksum manifest. Preview and export use the same motion compiler and source-time mapping. Frame cuts are quantized to 30 fps; script times are integer milliseconds. **Play in FunSync** opens the result paused in the existing player with its axes. **Open export folder** exposes the files; **Delete render** removes that owned export while retaining your recipe and source clips. Downloads and audio caches are retained; there is no automatic disk quota yet.
+
+## Current limits and next work
+
+This first version provides an editable composition workflow. Automatic verse/chorus recognition, weighted category pools, beat-aware clip scoring, interactive curve editing, automatic motion-gap detection, rendered transitions, and GPU motion extraction jobs are future work. Song motion currently uses an energy-following sine pattern on a tempo grid. Video uses hard cuts with configurable motion blending.
+
+Motion Studio's algorithms are vendored with provenance; the live ComfyUI graph/editor is not embedded or called. This version does not continuously rewrite device scripts during playback: edits produce a new prepared snapshot. Direct local preview uses browser-supported video formats; FFmpeg export can normalize sources that Chromium cannot decode. The inherited LAN remote features are not enabled by the loopback-only backend binding.
+
+Real hardware and authenticated Civitai video downloads still need field testing. Automated device tests use mocks; UI and export tests use synthetic media only. A signed installer/release has not been produced.
+
+## Tests and design
+
+```bash
+npm run test:composer       # compiler, storage, provenance, transport races, port ownership, FFmpeg
+npm run test:composer:ui    # real Electron window; requires a desktop display
+npm test                   # inherited FunSync unit suite
+```
+
+The UI test creates a disposable profile and synthetic clips, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also updates the screenshot above. It uses no account credentials or physical devices.
+
+- [Detailed roadmap](PLAN.md)
+- [Integration research and reusable functions](docs/REUSE_MAP.md)
+- [Original interactive UI study](docs/composer-ui.html)
+- [Motion Studio provenance and license](vendor/motion-studio/README.md)
+
+GPL-3.0-or-later; upstream attribution and history are retained. See [LICENSE](LICENSE).

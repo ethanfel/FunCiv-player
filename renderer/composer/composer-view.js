@@ -1,0 +1,241 @@
+import { createSession, arrange, validateSession, History, clone } from '../../packages/composer-core/index.mjs';
+import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
+import { evaluate } from '../../vendor/motion-studio/curve.mjs';
+import { CompositionPlayer } from './composition-player.js';
+import { ComposerDeviceSession } from './device-session.js';
+
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
+const options=(values,selected)=>values.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');
+const policies=[['clip','Clip motion'],['song','Follow song'],['gaps','Clip + marked gaps'],['hold','Neutral hold']];
+
+export class ComposerView {
+  constructor(app,root){
+    this.app=app;this.root=root;this.history=new History();this.catalog={clips:[],songs:[]};this.saved=[];this.revisions=new Map();
+    this.devices=new ComposerDeviceSession(app);this.analysisGeneration=0;this.selected=0;this.dirty=false;
+    this.root.innerHTML=`
+      <header class="fc-header"><div><span class="fc-eyebrow">FUNCIV / COMPOSER</span><h1>Make a session from a song.</h1></div>
+        <div class="fc-actions"><select data-field="saved" aria-label="Saved sessions"><option value="">Open session…</option></select><button data-action="save">Save session</button><button data-action="import" class="fc-primary">＋ Load song</button></div></header>
+      <div class="fc-status" role="status" aria-live="polite"><span data-status>Load a song and add a folder of clips to begin.</span><progress hidden max="1"></progress><button data-action="cancel" hidden>Cancel</button></div>
+      <div class="fc-workspace">
+        <aside class="fc-library"><div class="fc-panel-heading"><h2>Clip library</h2><button data-action="scan">＋ Folder</button></div>
+          <div class="fc-library-tools"><button data-action="dataset">Sync FunCiv Data</button><button data-action="credentials">API settings</button></div>
+          <label class="fc-search">Find clips<input data-field="search" type="search" placeholder="Name or category…"></label>
+          <label class="fc-check"><input data-field="drafts" type="checkbox"> Include draft scripts</label>
+          <div class="fc-library-count"></div><div class="fc-clips"></div>
+        </aside>
+        <main class="fc-main">
+          <div class="fc-songbar"><div class="fc-song-title">No song loaded</div><div class="fc-actions"><select data-field="song" aria-label="Previously imported songs"><option value="">Recent songs…</option></select><button data-action="analyze">Analyze song</button></div></div>
+          <div class="fc-preview"><video muted playsinline preload="auto" hidden></video><video muted playsinline preload="auto" hidden></video><div class="fc-preview-empty">Your assembled session appears here.<br><small>The song sets the pace. Clips bring the motion.</small></div><span class="fc-preview-label">PREVIEW · DEVICES OFF</span></div>
+          <audio preload="auto"></audio>
+          <div class="fc-transport"><button data-action="play" aria-label="Play or pause preview">▶ Play</button><button data-action="stop">Stop</button><output class="fc-time">0:00.0</output><input data-field="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Session position"><label>Volume<input data-field="volume" type="range" min="0" max="1" value="0.7" step="0.05"></label></div>
+          <div class="fc-timeline"><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-section-strip"></div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="68" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div>
+          <div class="fc-editbar"><button data-action="undo">↶ Undo</button><button data-action="redo">↷ Redo</button><button data-action="split">Split at playhead</button><button data-action="merge">Merge next</button><span class="fc-spacer"></span><button data-action="assemble" class="fc-primary">Assemble</button><button data-action="variation">New variation</button></div>
+          <div class="fc-sections"></div>
+          <div class="fc-footer"><div class="fc-summary">Choose a song to build your timeline.</div><div class="fc-actions"><button data-action="prepare">Prepare preview</button><button data-action="devices">Prepare device sync</button><button data-action="render" class="fc-primary">Render temporary video</button></div></div>
+          <div class="fc-render" hidden></div>
+        </main>
+        <aside class="fc-inspector"><h2>Section settings</h2><div class="fc-inspector-content">Select a section to edit its category and motion.</div><div class="fc-session-settings"></div></aside>
+      </div>`;
+    this.player=new CompositionPlayer(this.root.querySelector('audio'),[...this.root.querySelectorAll('video')],time=>this.tick(time),message=>this.message(message,true));
+    this.player.audio.volume=.7;
+    this.root.addEventListener('click',event=>{
+      const button=event.target.closest('[data-action]');if(button){void this.action(button.dataset.action,button).catch(e=>this.message(e.message,true));return;}
+      const section=event.target.closest('[data-section]');if(section){this.selected=Number(section.dataset.section);this.renderEditor();}
+      const placement=event.target.closest('[data-placement]');if(placement){this.selectedPlacement=placement.dataset.placement;this.renderInspector();}
+    });
+    this.root.addEventListener('change',event=>{void this.change(event.target).catch(e=>{this.message(e.message,true);this.renderEditor();});});
+    this.root.querySelector('[data-field=search]').addEventListener('input',()=>this.renderLibrary());
+    this.root.addEventListener('keydown',event=>{if(event.code==='Space'&&!['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName)){event.preventDefault();event.stopPropagation();void this.action('play').catch(e=>this.message(e.message,true));}});
+    for(const canvas of this.root.querySelectorAll('canvas'))canvas.addEventListener('click',event=>{
+      if(!this.session)return;const rect=canvas.getBoundingClientRect();this.setPosition((event.clientX-rect.left)/rect.width*this.session.song.duration_ms);
+    });
+    this.resizeObserver=new ResizeObserver(()=>this.draw());this.resizeObserver.observe(this.root);
+    window.addEventListener('beforeunload',event=>{if(this.dirty){event.preventDefault();event.returnValue='';}});
+  }
+  ipc(action,payload){return window.funsync.composer(action,payload);}
+  async show(){this.visible=true;await this.refresh();this.renderEditor();}
+  hide(){this.visible=false;this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
+  message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
+  async refresh(){
+    this.catalog=await this.ipc('state');this.saved=await this.ipc('sessions');
+    this.root.querySelector('[data-field=saved]').innerHTML='<option value="">Open session…</option>'+options(this.saved.map(s=>[s.id,s.name]),'');
+    this.root.querySelector('[data-field=song]').innerHTML='<option value="">Recent songs…</option>'+options(this.catalog.songs.map(s=>[s.id,s.name]),'');
+    this.renderLibrary();
+  }
+  async job(action,payload){
+    if(this.busy)throw new Error('Wait for the current task or cancel it.');
+    this.busy=true;const progress=this.root.querySelector('progress'),cancel=this.root.querySelector('[data-action=cancel]');
+    try{
+      const job=await this.ipc(action,payload);if(!job)return null;
+      this.jobId=job.id;progress.hidden=false;cancel.hidden=false;
+      while(true){const state=await this.ipc('job',{id:job.id});progress.value=state.progress;this.message(state.message);
+        if(state.state==='completed'){await this.refresh();return state.result;}
+        if(state.state!=='running')throw new Error(state.error||'Task cancelled.');
+        await new Promise(resolve=>setTimeout(resolve,250));
+      }
+    }finally{this.busy=false;this.jobId=null;progress.hidden=true;cancel.hidden=true;}
+  }
+  invalidate(){this.player.pause();this.player.snapshot=null;this.devices.release();this.prepared=null;this.root.querySelector('.fc-preview-label').textContent='PREVIEW · NEEDS PREPARATION';}
+  edit(fn,{keepPlacements=false}={}){
+    if(!this.session)throw new Error('Load a song first.');
+    const next=clone(this.session);fn(next);if(!keepPlacements){next.placements=[];next.sections.forEach(s=>{s.locked=false;});delete next.asset_bindings;}
+    validateSession(next);this.history.record(this.session);this.invalidate();this.session=next;this.dirty=true;this.renderEditor();
+  }
+  newSong(song){
+    this.analysisGeneration++;this.invalidate();this.session=createSession(song);this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.renderEditor();this.message('Song ready. Analyze it, choose categories, then assemble.');
+  }
+  discardOkay(){return !this.dirty||window.confirm('Leave this session without saving your changes?');}
+  async action(action,button){
+    if(action==='cancel'){this.analysisGeneration++;if(this.jobId)await this.ipc('cancel',{id:this.jobId});return;}
+    if(action==='scan'){const result=await this.job('scan');if(result)this.message(`${result.count} clips indexed.${result.warnings.length?' '+result.warnings.slice(0,3).join(' · '):''}`);return;}
+    if(action==='dataset'){const result=await this.job('dataset');if(result)this.message(`${result.count} script variants indexed. Resolve a selected clip before assembly.`);return;}
+    if(action==='resolve'){await this.job('resolve',{id:button.dataset.id,site:this.site||'civitai.com'});this.message('Video and verified scripts are ready. Binding checked by duration; preview before use.');return;}
+    if(action==='credentials'){this.credentials();return;}
+    if(action==='import'){if(!this.discardOkay())return;const song=await this.job('song');if(song)this.newSong(song);return;}
+    if(!this.session)throw new Error('Load a song first.');
+    if(action==='save'){this.session.revision=this.revisions.get(this.session.id)??this.session.revision;this.session=await this.ipc('save',{session:this.session});this.revisions.set(this.session.id,this.session.revision);this.dirty=false;await this.refresh();this.message('Session saved.');return;}
+    if(action==='undo'||action==='redo'){this.invalidate();this.session=this.history[action](this.session);this.session.revision=this.revisions.get(this.session.id)??this.session.revision;this.dirty=true;this.selected=Math.min(this.selected,this.session.sections.length-1);this.renderEditor();return;}
+    if(action==='analyze'){await this.analyze();return;}
+    if(action==='split'){
+      const at=Math.round(this.position||0),index=this.session.sections.findIndex(s=>at>s.start_ms&&at<s.end_ms);
+      if(index<0)throw new Error('Move the playhead inside a section to split it.');
+      this.edit(s=>{const before=s.sections[index],after={...clone(before),id:crypto.randomUUID(),label:before.label+' B',start_ms:at,gaps:[]};before.end_ms=at;before.gaps=[];s.sections.splice(index+1,0,after);});return;
+    }
+    if(action==='merge'){if(this.selected>=this.session.sections.length-1)throw new Error('Select a section with another section after it.');this.edit(s=>{s.sections[this.selected].end_ms=s.sections[this.selected+1].end_ms;s.sections[this.selected].gaps=[];s.sections.splice(this.selected+1,1);});return;}
+    if(action==='assemble'||action==='variation'){
+      const next=clone(this.session);if(action==='variation')next.seed++;
+      const pool=this.catalog.clips.filter(c=>this.includeDrafts||c.review_status!=='draft');
+      const assembled=arrange(next,pool);this.history.record(this.session);this.invalidate();this.session=assembled;this.dirty=true;this.renderEditor();
+      this.message(`${assembled.placements.length} clips arranged. Locked sections retained.`);return;
+    }
+    if(action==='prepare'){await this.prepare();return;}
+    if(action==='play'){if(this.player.intent){this.player.pause();return;}if(!this.prepared)await this.prepare();if(this.visible&&this.prepared)await this.player.play();return;}
+    if(action==='stop'){this.player.pause();this.devices.release();if(this.prepared)await this.player.seek(0);this.tick(0);return;}
+    if(action==='devices'){
+      if(this.devices.active){this.devices.release();this.tick(this.position);return;}
+      this.player.pause();if(!this.prepared)await this.prepare();
+      if(!this.visible||!this.prepared)return;
+      const armed=await this.devices.arm(this.prepared.snapshot,this.player.wrapper);this.tick(this.position);
+      if(armed)this.message('Connected devices prepared. Press Play to start; editing pauses and releases sync.');return;
+    }
+    if(action==='render'){
+      this.player.pause();this.devices.release();this.rendered=await this.job('render',{session:this.session});
+      if(this.rendered){const box=this.root.querySelector('.fc-render');box.hidden=false;box.innerHTML=`<span>Ready: ${esc(this.rendered.name)} + six motion tracks</span><button data-action="open-render">Play in FunSync</button><button data-action="folder">Open export folder</button><button data-action="delete-render">Delete render</button>`;this.message('Temporary video and scripts exported.');}return;
+    }
+    if(action==='folder'){await this.ipc('export-folder',{id:this.rendered.id});return;}
+    if(action==='delete-render'){
+      if(!window.confirm('Delete this rendered video and its exported scripts? Your session and source clips remain available.'))return;
+      if(this.app._currentVideoPath===this.rendered.path){this.app.videoPlayer.pause();this.app.videoPlayer.video.removeAttribute('src');this.app.videoPlayer.video.load();}
+      await this.ipc('delete-render',{id:this.rendered.id});this.rendered=null;this.root.querySelector('.fc-render').hidden=true;this.message('Render deleted. The saved recipe can produce it again.');return;
+    }
+    if(action==='open-render'){
+      const prepared=await this.ipc('render-scripts',{id:this.rendered.id});
+      this.app.loadVideo({...this.rendered,_isPathBased:true},{autoPlay:false});
+      const main={...prepared.L0,axes:Object.entries(prepared).filter(([axis])=>axis!=='L0').map(([id,script])=>({id,actions:script.actions}))};
+      await this.app.loadFunscript({name:'session.funscript',textContent:JSON.stringify(main),path:this.rendered.scriptPath});return;
+    }
+    if(action==='mark-gap'){
+      const start=Number(this.root.querySelector('[data-gap=start]').value)*1000,end=Number(this.root.querySelector('[data-gap=end]').value)*1000;
+      const section=this.session.sections[this.selected];if(start<section.start_ms||end>section.end_ms||end<=start)throw new Error('Choose a nonempty gap inside this section.');
+      this.edit(s=>{s.sections[this.selected].gaps.push([Math.round(start),Math.round(end)]);},{keepPlacements:true});return;
+    }
+    if(action==='clear-gaps'){this.edit(s=>{s.sections[this.selected].gaps=[];},{keepPlacements:true});return;}
+  }
+  async change(input){
+    const field=input.dataset.field;if(!field)return;
+    if(field==='drafts'){this.includeDrafts=input.checked;this.renderLibrary();return;}
+    if(field==='volume'){this.player.audio.volume=Number(input.value);return;}
+    if(field==='search')return;
+    if(field==='seek'){this.setPosition(Number(input.value));return;}
+    if(field==='tag'){this.catalog=await this.ipc('tag',{id:input.dataset.id,category:input.value});this.renderLibrary();this.renderInspector();return;}
+    if(field==='song'){if(input.value&&this.discardOkay())this.newSong(this.catalog.songs.find(s=>s.id===input.value));return;}
+    if(field==='saved'){
+      if(!input.value||!this.discardOkay())return;const session=await this.ipc('load',{id:input.value});validateSession(session);this.analysisGeneration++;this.invalidate();this.session=session;this.revisions.set(session.id,session.revision);this.history=new History();this.selected=0;this.position=0;this.dirty=false;this.renderEditor();this.message('Session restored.');return;
+    }
+    if(['name','bpm','blend_ms'].includes(field)){this.edit(s=>{s[field]=field==='name'?input.value:Number(input.value);},{keepPlacements:true});return;}
+    if(['source_in_ms','rate','clip_id'].includes(field)){
+      this.edit(s=>{const p=s.placements.find(p=>p.id===this.selectedPlacement);if(!p)throw new Error('Select a clip on the timeline.');p[field]=field==='clip_id'?input.value:Number(input.value)*(field==='source_in_ms'?1000:1);delete s.asset_bindings;validateSession(s,this.catalog.clips);},{keepPlacements:true});return;
+    }
+    if(field==='end_ms'){
+      this.edit(s=>{const end=Math.round(Number(input.value)*1000);s.sections[this.selected].end_ms=end;s.sections[this.selected].gaps=[];s.sections[this.selected+1].start_ms=end;s.sections[this.selected+1].gaps=[];});return;
+    }
+    if(['category','motion','strength','label','locked'].includes(field)){
+      this.edit(s=>{const section=s.sections[this.selected];section[field]=field==='locked'?input.checked:field==='strength'?Number(input.value):input.value;},{keepPlacements:field!=='category'});
+    }
+  }
+  setPosition(time){this.position=Math.round(time);if(this.prepared)void this.player.seek(this.position).catch(e=>this.message(e.message,true));this.tick(this.position);}
+  async analyze(){
+    if(this.busy)throw new Error('Wait for the current task.');this.busy=true;this.player.pause();const gen=++this.analysisGeneration,id=this.session.id;
+    const bar=this.root.querySelector('progress'),cancel=this.root.querySelector('[data-action=cancel]');bar.hidden=false;cancel.hidden=false;
+    try{
+      this.message('Analyzing song energy and beats…');const file=await(await fetch(this.session.song.url)).blob();const {samples,sampleRate}=await decodeBeatAudio(file);
+      const analysis=await analyzeBeatAudio(samples,sampleRate,{character:true,cancelled:()=>gen!==this.analysisGeneration,progress:value=>{bar.value=value;}});
+      if(gen!==this.analysisGeneration||this.session.id!==id)return;
+      this.edit(s=>{s.analysis=analysis;s.bpm=analysis.bpm||120;},{keepPlacements:true});
+      this.message(`Analysis ready · ${analysis.bpm||'unknown'} BPM · ${Math.round(analysis.confidence*100)}% confidence. Adjust BPM and section boundaries as needed.`);
+    }finally{this.busy=false;bar.hidden=true;cancel.hidden=true;}
+  }
+  async prepare(){
+    if(this.preparing)throw new Error('Preview is being prepared.');this.preparing=true;
+    try{this.invalidate();const session=this.session;this.message('Compiling the session…');const prepared=await this.ipc('prepare',{session});
+      if(this.session!==session||!this.visible)return;
+      this.prepared=prepared;this.session.asset_bindings=prepared.asset_bindings;
+      await this.player.load(prepared.snapshot,prepared.clips);this.root.querySelector('.fc-preview-empty').hidden=true;this.draw();
+      this.message(prepared.snapshot.warnings.length?prepared.snapshot.warnings.join(' · '):'Preview ready. Video, motion and audio share the song clock.');
+    }finally{this.preparing=false;}
+  }
+  renderLibrary(){
+    const search=this.root.querySelector('[data-field=search]').value.toLowerCase();
+    const clips=this.catalog.clips.filter(c=>(this.includeDrafts||c.review_status!=='draft')&&`${c.name} ${(c.categories||[]).join(' ')}`.toLowerCase().includes(search));
+    this.root.querySelector('.fc-library-count').textContent=`${clips.length} shown · ${this.catalog.clips.filter(c=>c.available).length} local`;
+    this.root.querySelector('.fc-clips').innerHTML=clips.map(c=>`<article class="fc-clip"><div class="fc-clip-top"><strong>${esc(c.name)}</strong><span>${stamp(c.duration_ms)}</span></div><small>${esc(c.review_status)} · ${c.script_ready?(c.axes||[]).join(' / '):c.origin==='dataset'?'scripts not fetched':'no motion script'}</small><label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${c.available&&c.script_ready?'Verify / refresh':'Resolve video + scripts'}</button>`:!c.available?'<small>File unavailable — rescan its folder.</small>':''}</article>`).join('')||'<p class="fc-empty">Add your downloaded clip folder, or sync the dataset to browse script variants.</p>';
+  }
+  renderEditor(){
+    const s=this.session;if(!s)return;
+    this.selected=Math.min(this.selected,s.sections.length-1);
+    this.root.querySelector('.fc-song-title').textContent=`${s.name} · ${stamp(s.song.duration_ms)}`;
+    this.root.querySelector('[data-field=seek]').max=s.song.duration_ms;
+    this.root.querySelector('.fc-section-strip').innerHTML=s.sections.map((section,i)=>`<button class="${i===this.selected?'fc-selected':''}" data-section="${i}" style="flex:${section.end_ms-section.start_ms}" title="${esc(section.label)}">${esc(section.label)}</button>`).join('');
+    const clips=new Map(this.catalog.clips.map(c=>[c.id,c]));
+    this.root.querySelector('.fc-placement-strip').innerHTML=s.placements.map(p=>`<button data-placement="${esc(p.id)}" style="width:${(p.end_ms-p.start_ms)/s.song.duration_ms*100}%;left:${p.start_ms/s.song.duration_ms*100}%" title="${esc(clips.get(p.clip_id)?.name||'Missing clip')}">${esc(clips.get(p.clip_id)?.name||'Missing')}</button>`).join('');
+    this.root.querySelector('.fc-sections').innerHTML=s.sections.map((section,i)=>`<button class="fc-section-row ${i===this.selected?'fc-selected':''}" data-section="${i}"><span>${String(i+1).padStart(2,'0')}</span><strong>${esc(section.label)}</strong><span>${stamp(section.start_ms)} – ${stamp(section.end_ms)}</span><span>${esc(section.category==='*'?'Any category':section.category)}</span><span>${esc(policies.find(([id])=>id===section.motion)?.[1])}</span><span>${section.locked?'Locked':section.strength+'%'}</span></button>`).join('');
+    this.root.querySelector('.fc-summary').textContent=`${s.sections.length} sections · ${s.placements.length} cuts · variation ${s.seed}${this.dirty?' · unsaved changes':''}`;
+    this.renderInspector();this.draw();
+  }
+  renderInspector(){
+    if(!this.session)return;const s=this.session,section=s.sections[this.selected];
+    const categories=[...new Set(this.catalog.clips.flatMap(c=>c.categories||[]).concat(section.category))].filter(c=>c!=='*').sort();
+    const p=s.placements.find(p=>p.id===this.selectedPlacement);
+    this.root.querySelector('.fc-inspector-content').innerHTML=`<label>Name<input data-field="label" value="${esc(section.label)}"></label><label>Category<select data-field="category">${options([['*','Any category'],...categories.map(c=>[c,c])],section.category)}</select></label><label>Motion<select data-field="motion">${options(policies,section.motion)}</select></label><label>Strength (%)<input data-field="strength" type="number" min="0" max="100" value="${section.strength}"></label><label>Section ends at (seconds)<input data-field="end_ms" type="number" step="0.001" value="${section.end_ms/1000}" ${this.selected===s.sections.length-1?'disabled':''}></label><label class="fc-check"><input data-field="locked" type="checkbox" ${section.locked?'checked':''}> Keep clips on variation</label>
+      ${section.motion==='gaps'?`<div class="fc-gap"><h3>Marked motion gaps</h3><p>Only these ranges receive song motion.</p><label>Start (seconds)<input data-gap="start" type="number" step="0.01" value="${section.start_ms/1000}"></label><label>End (seconds)<input data-gap="end" type="number" step="0.01" value="${section.end_ms/1000}"></label><button data-action="mark-gap">Add gap</button><button data-action="clear-gaps">Clear</button><small>${section.gaps.map(([a,b])=>stamp(a)+'–'+stamp(b)).join(', ')||'No gaps marked'}</small></div>`:''}
+      ${p?`<div class="fc-gap"><h3>Selected clip</h3><label>Replace with<select data-field="clip_id">${options(this.catalog.clips.filter(c=>c.available&&(this.includeDrafts||c.review_status!=='draft')).map(c=>[c.id,c.name]),p.clip_id)}</select></label><label>Source in (seconds)<input data-field="source_in_ms" type="number" min="0" step="0.01" value="${p.source_in_ms/1000}"></label><label>Speed<input data-field="rate" type="number" min="0.25" max="4" step="0.05" value="${p.rate}"></label><small>${stamp(p.start_ms)}–${stamp(p.end_ms)} on song</small></div>`:''}`;
+    this.root.querySelector('.fc-session-settings').innerHTML=`<h2>Session</h2><label>Name<input data-field="name" value="${esc(s.name)}"></label><label>Song BPM<input data-field="bpm" type="number" min="30" max="300" value="${s.bpm||120}"></label><label>Motion blend (ms)<input data-field="blend_ms" type="number" min="0" max="2000" step="10" value="${s.blend_ms}"></label><p>Video uses clean cuts. Motion blends around each cut. Beat analysis is a starting point; sections remain editable.</p>`;
+  }
+  tick(time=0){
+    if(this.prepared)this.position=time;
+    this.root.querySelector('.fc-time').textContent=stamp(time);
+    this.root.querySelector('[data-field=seek]').value=time;
+    this.root.querySelector('[data-action=play]').textContent=this.player.intent?'Ⅱ Pause':'▶ Play';
+    this.root.querySelector('[data-action=devices]').textContent=this.devices.active?'Release device sync':'Prepare device sync';
+    this.root.querySelector('.fc-preview-label').textContent=this.devices.active?'PREVIEW · DEVICE SYNC READY':this.prepared?'PREVIEW · DEVICES OFF':'PREVIEW · NEEDS PREPARATION';
+    this.root.querySelector('.fc-playhead').style.left=`${Math.min(100,time/(this.session?.song.duration_ms||1)*100)}%`;
+    if(this.devices.active)this.app.sessionTracker?.setPlayback({currentTime:time/1000,duration:this.session.song.duration_ms/1000,paused:this.player.audio.paused});
+  }
+  draw(){
+    if(!this.session)return;
+    for(const [selector,values,color] of [['.fc-wave',this.session.analysis?.waveform,'#7dd3fc'],['.fc-motion',this.prepared?.snapshot.scripts.L0.actions,'#c4b5fd']]){
+      const canvas=this.root.querySelector(selector),width=Math.floor(canvas.clientWidth);if(!width)continue;canvas.width=width*devicePixelRatio;canvas.height=64*devicePixelRatio;
+      const ctx=canvas.getContext('2d');ctx.scale(devicePixelRatio,devicePixelRatio);ctx.clearRect(0,0,width,64);ctx.strokeStyle=color;ctx.lineWidth=1.3;ctx.beginPath();
+      if(values?.length)for(let x=0;x<width;x++){
+        if(selector==='.fc-wave'){const h=values[Math.floor(x/width*values.length)]*28;ctx.moveTo(x,32-h);ctx.lineTo(x,32+h);}
+        else{const y=58-evaluate(values,x/width*this.session.song.duration_ms)*.52;if(x===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
+      }else{ctx.moveTo(0,32);ctx.lineTo(width,32);}ctx.stroke();
+    }
+  }
+  credentials(){
+    const dialog=document.createElement('dialog');dialog.className='fc-dialog';dialog.innerHTML=`<form method="dialog"><h2>Civitai access</h2><label>Site<select name="site">${options(['civitai.com','civitai.red','civitaired.com'].map(s=>[s,s]),this.site||'civitai.com')}</select></label><label>API key<input name="key" type="password" autocomplete="off" placeholder="Leave empty to keep the stored key"></label><p>The key stays in encrypted local storage. Videos are downloaded only when you resolve a selected clip.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="save">Save</button><button value="remove">Remove key</button></div></form>`;
+    dialog.addEventListener('close',()=>{const value=dialog.querySelector('[name=key]').value;this.site=dialog.querySelector('[name=site]').value;dialog.querySelector('[name=key]').value='';const result=dialog.returnValue;dialog.remove();if(result==='remove'||(result==='save'&&value))void this.ipc('key',{value:result==='remove'?'':value}).then(()=>this.message('API settings saved.')).catch(e=>this.message(e.message,true));});
+    this.root.append(dialog);dialog.showModal();
+  }
+}

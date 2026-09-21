@@ -2,14 +2,21 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+// Independent fork identity must be set before stores, locks or logs initialize.
+app.setName('FunCiv Player');
+app.setPath('userData', process.env.FUNCIV_USER_DATA || path.join(app.getPath('appData'), 'funciv-player'));
+app.setAppLogsPath(path.join(app.getPath('userData'), 'logs'));
+require('./composer-ipc').registerComposerIPC();
+
+
 // --- Portable mode (run from a USB / external disk) -------------------------
 // When launched from electron-builder's `portable` target, PORTABLE_EXECUTABLE_DIR
 // points at the folder holding the user-visible .exe (the app itself runs from a
-// temp extraction). We also honour a `data/` folder or a `FunSync-portable.txt`
+// temp extraction). We also honour a `funciv-data/` folder or a `FunCiv-portable.txt`
 // marker next to the exe so an unpacked/zip build can opt in (VS Code convention).
 //
 // In portable mode ALL durable data — config, logs, backups, the (plaintext)
-// Handy key — lives in a `data/` folder next to the exe instead of %LOCALAPPDATA%,
+// Handy key — lives in a `funciv-data/` folder next to the exe instead of %LOCALAPPDATA%,
 // so the whole thing travels on the stick. Regenerable caches (thumbnails, remux)
 // deliberately stay in the OS temp dir — they're fast-local and not worth carrying.
 //
@@ -20,8 +27,8 @@ const PORTABLE_DIR = (() => {
   if (process.env.PORTABLE_EXECUTABLE_DIR) return process.env.PORTABLE_EXECUTABLE_DIR;
   try {
     const exeDir = path.dirname(app.getPath('exe'));
-    if (fs.existsSync(path.join(exeDir, 'FunSync-portable.txt'))
-        || fs.existsSync(path.join(exeDir, 'data'))) {
+    if (fs.existsSync(path.join(exeDir, 'FunCiv-portable.txt'))
+        || fs.existsSync(path.join(exeDir, 'funciv-data'))) {
       return exeDir;
     }
   } catch { /* getPath('exe') can throw very early on some platforms — ignore */ }
@@ -29,7 +36,7 @@ const PORTABLE_DIR = (() => {
 })();
 let IS_PORTABLE = false;
 if (PORTABLE_DIR) {
-  const dataDir = path.join(PORTABLE_DIR, 'data');
+  const dataDir = path.join(PORTABLE_DIR, 'funciv-data');
   try {
     fs.mkdirSync(dataDir, { recursive: true });
     // Probe writability up front — read-only / locked media must degrade
@@ -197,7 +204,7 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 500,
-    title: "FunSync Player",
+    title: "FunCiv Player",
     icon: path.join(__dirname, '..', 'assets', 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     backgroundColor: winColors.background,
     ...(process.platform === 'win32' ? {
@@ -317,9 +324,12 @@ app.whenReady().then(async () => {
   // resets to defaults and the user loses their entire library).
   // SCOPE-data-backup.md §4.4 — "before any UI loads".
   const userDataDir = app.getPath('userData');
+  const firstInstall = !fs.existsSync(path.join(userDataDir, 'config.json'))
+    && !fs.existsSync(path.join(userDataDir, 'backups'));
   const _tRecover = Date.now();
   try {
     _recoveryResult = await dataBackup.verifyAndRecover({ userDataDir });
+    if (firstInstall && _recoveryResult.fellBack) _recoveryResult = { recovered: false, firstRun: true };
     if (_recoveryResult.recovered) {
       log.warn(
         `[Backup] Recovered config.json from snapshot ${_recoveryResult.fromSnapshot.filename} (reason: ${_recoveryResult.reason})`
@@ -463,7 +473,8 @@ process.on('unhandledRejection', (reason) => log.error('Unhandled rejection:', r
 
 // --- IPC Handlers: App Info ---
 
-ipcMain.handle('get-backend-port', () => {
+ipcMain.handle('get-backend-port', async () => {
+  await _backendReadyPromise;
   const { getBackendPort } = require('./python-bridge');
   return getBackendPort();
 });
@@ -558,7 +569,7 @@ ipcMain.handle('collect-diagnostics', async (_event, rendererState) => {
   const health = getHealthState?.() || {};
   return {
     app: {
-      name: 'FunSync Player',
+      name: 'FunCiv Player',
       version: app.getVersion(),
     },
     platform: {
@@ -573,7 +584,7 @@ ipcMain.handle('collect-diagnostics', async (_event, rendererState) => {
     },
     backend: {
       running: !!health.healthy,
-      port: 5123,
+      port: require('./python-bridge').getBackendPort(),
     },
     devices: {
       handy: !!rendererState?.handyConnected,
@@ -1514,7 +1525,7 @@ ipcMain.handle('scan-directory', async (_event, dirPathOrPaths, sourceMap) => {
   try {
     const { app } = require('electron');
     const thumbDir = path.join(app.getPath('userData'), 'thumb-cache');
-    fetch('http://127.0.0.1:5123/api/media/register', {
+    fetch(`http://127.0.0.1:${require('./python-bridge').getBackendPort()}/api/media/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ videos, thumbCacheDir: thumbDir }),

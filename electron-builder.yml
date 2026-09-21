@@ -1,5 +1,5 @@
-appId: com.funsync.player
-productName: FunSync Player
+appId: com.ethanfel.funciv
+productName: FunCiv Player
 copyright: Copyright © 2026
 
 # serialport's native binding (@serialport/bindings-cpp) ships N-API prebuilds
@@ -20,6 +20,8 @@ directories:
 files:
   - electron/**/*
   - renderer/**/*
+  - packages/**/*
+  - vendor/**/*
   - node_modules/**/*
   - package.json
 
@@ -53,19 +55,19 @@ linux:
   icon: assets/icons/icon.png
   category: Video
   # Override the binary name so the AppImage doesn't carry a space (the
-  # default derives from `productName` -> "FunSync Player.AppImage",
+  # default derives from `productName` -> "FunCiv Player.AppImage",
   # which is awkward to launch from a shell without quoting). The
-  # in-app productName "FunSync Player" is preserved for the desktop
+  # in-app productName "FunCiv Player" is preserved for the desktop
   # entry / menu label.
-  executableName: funsync-player
+  executableName: funciv-player
   # Space-free AppImage name so it matches latest-linux.yml (same spaces →
   # dashes vs GitHub dots mismatch as the Windows installer had).
-  artifactName: FunSync-Player-${version}.${ext}
+  artifactName: FunCiv-Player-${version}.${ext}
   target:
     - target: AppImage
       arch: x64
   desktop:
-    Name: FunSync Player
+    Name: FunCiv Player
     Comment: Video player with device integration for synchronized funscript playback
   extraFiles:
     - from: ffmpeg-linux/
@@ -76,12 +78,12 @@ linux:
 
 nsis:
   # Dash-based, space-free artifact name. The default derives from the
-  # space-containing productName ("FunSync Player Setup X.Y.Z.exe"); GitHub
+  # space-containing productName ("FunCiv Player Setup X.Y.Z.exe"); GitHub
   # then rewrites spaces → dots on upload ("FunSync.Player.Setup..."), but
   # electron-builder writes latest.yml with spaces → DASHES — so the two never
   # matched and the auto-update download 404'd. Naming the file with dashes up
   # front makes the file, latest.yml, and the GitHub asset all identical.
-  artifactName: FunSync-Player-Setup-${version}.${ext}
+  artifactName: FunCiv-Player-Setup-${version}.${ext}
   # Assisted installer (NOT oneClick) — shows a wizard with a destination
   # folder picker and a "create desktop shortcut" checkbox. Default install
   # path stays per-user (`%LOCALAPPDATA%\Programs\funsync-player`); the user
@@ -95,11 +97,11 @@ nsis:
   runAfterFinish: true
   createDesktopShortcut: true        # default state of the wizard checkbox
   createStartMenuShortcut: true
-  uninstallDisplayName: FunSync Player
+  uninstallDisplayName: FunCiv Player
 
 publish:
   provider: github
-  owner: DaveMakesWaves
-  repo: funsync-player
+  owner: ethanfel
+  repo: FunCiv-player
 
 asar: true

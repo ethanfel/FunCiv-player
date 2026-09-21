@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Salle d'audience"
   },
   "nav": {
+    "composer": "Composer",
     "library": "Bibliothèque",
     "playlists": "Listes de lecture",
     "categories": "Catégories",

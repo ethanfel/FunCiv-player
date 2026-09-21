@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('funsync', {
+  composer: (action, payload) => ipcRenderer.invoke('composer', action, payload),
   // Static platform identifier from the main process — used by anything
   // that needs to branch on OS (HEVC codec install guidance, native
   // dialog quirks, etc.) without an IPC roundtrip. Values match

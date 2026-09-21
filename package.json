@@ -1,11 +1,11 @@
 {
-  "name": "funsync-player",
-  "version": "0.9.2",
-  "description": "Local desktop video player with Handy device integration for synchronized funscript playback",
+  "name": "funciv-player",
+  "version": "0.1.0",
+  "description": "Song-driven clip composition and synchronized motion, based on FunSync Player",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "concurrently \"electron .\" \"cd backend && python3 main.py || python main.py\"",
+    "dev": "electron .",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
@@ -19,7 +19,9 @@
     "specs:update": "node scripts/device-spec-check.mjs --update",
     "specs:coverage": "node scripts/buttplug-coverage.mjs",
     "vault:check": "node scripts/vault-freshness.mjs",
-    "vault:stamp": "node scripts/vault-freshness.mjs --stamp"
+    "vault:stamp": "node scripts/vault-freshness.mjs --stamp",
+    "test:composer": "node --test --test-isolation=none tests/composer/*.test.mjs",
+    "test:composer:ui": "node tests/composer/smoke.mjs"
   },
   "keywords": [
     "video-player",
@@ -51,5 +53,6 @@
     "electron-builder": "^25.1.8",
     "jsdom": "^29.0.2",
     "vitest": "^4.1.4"
-  }
+  },
+  "productName": "FunCiv Player"
 }

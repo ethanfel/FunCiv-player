@@ -45,6 +45,8 @@ export class KeyboardHandler {
   }
 
   _onKeyDown(e) {
+    // Composer owns its song clock and keyboard controls.
+    if (document.getElementById('app')?.dataset.view === 'composer') return;
     // Don't capture keys when typing in an input
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
