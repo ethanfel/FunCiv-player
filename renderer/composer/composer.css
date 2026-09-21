@@ -15,6 +15,8 @@
 .fc-rating-warning[hidden],.fc-draft-warning[hidden]{display:none}
 .fc-dataset-review{display:block;line-height:1.5;margin-top:8px}
 .fc-dataset-review[hidden]{display:none}
+.fc-transport{flex-wrap:wrap}
+.fc-transport select{max-width:175px!important;font-size:11px!important;padding:6px!important}
 .fc-library-count{line-height:1.6}
 .fc-output-settings{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:0 0 12px}
 .fc-output-settings label{display:flex;flex-direction:column;gap:5px;color:var(--fc-muted);font-size:11px}

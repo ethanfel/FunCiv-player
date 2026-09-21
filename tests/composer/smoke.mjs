@@ -56,6 +56,31 @@ try{
   await page.locator('[data-field=library-view]').selectOption('ready');
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
+  assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'song');
+  assert.ok(await page.evaluate(()=>!window.app.composer.session.analysis&&!window.app.composer.session.placements.length&&!window.app.composer.prepared));
+  await page.evaluate(async()=>{
+    const context=new AudioContext(),analyser=context.createAnalyser(),source=context.createMediaElementSource(window.app.composer.player.audio);
+    source.connect(analyser);analyser.connect(context.destination);await context.resume();window.songAudioProbe={context,analyser};
+  });
+  await page.locator('[data-field=volume]').fill('0.6');await page.locator('[data-field=volume]').dispatchEvent('change');
+  await page.locator('[data-action=play]').click({force:true});
+  await until(()=>{
+    const c=window.app.composer,samples=new Float32Array(2048);window.songAudioProbe.analyser.getFloatTimeDomainData(samples);
+    return c.player.audio.currentTime>.3&&c.position>300&&samples.some(v=>Math.abs(v)>.01);
+  },{timeout:10000});
+  assert.ok(await page.evaluate(()=>!window.app.composer.player.audio.muted&&window.app.composer.player.audio.volume===.6&&!window.app.composer.devices.active));
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'listening never compiles clips or scripts');
+  await page.locator('[data-action=play]').click({force:true});
+  assert.equal(await page.evaluate(()=>window.app.composer.player.audio.paused),true);
+  await page.locator('[data-field=seek]').fill('2200');await page.locator('[data-field=seek]').dispatchEvent('change');
+  assert.ok(await page.evaluate(()=>Math.abs(window.app.composer.player.audio.currentTime-2.2)<.01&&window.app.composer.player.audio.paused));
+  const wave=await page.locator('.fc-wave').boundingBox();
+  await page.locator('.fc-wave').click({position:{x:wave.width/3,y:32},force:true});
+  assert.ok(await page.evaluate(()=>Math.abs(window.app.composer.player.audio.currentTime-2)<.02));
+  await page.locator('[data-action=play]').click({force:true});await until(()=>window.app.composer.player.audio.currentTime>2.25);
+  await page.locator('[data-action=stop]').click({force:true});
+  assert.ok(await page.evaluate(()=>window.app.composer.player.audio.paused&&window.app.composer.position===0&&window.app.composer.player.audio.currentTime===0));
+  console.log('PASS: audible song signal before analysis or assembly, play/pause, waveform and slider seek, volume, stop, and devices off.');
   assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080');
   const framing=()=>{const root=document.querySelector('#composer-container'),frame=root.querySelector('.fc-preview').getBoundingClientRect(),stage=root.querySelector('.fc-preview-stage').getBoundingClientRect();return {ratio:frame.width/frame.height,inside:frame.width<=stage.width&&frame.height<=stage.height+1,fits:[...root.querySelectorAll('.fc-preview video')].map(v=>getComputedStyle(v).objectFit)};};
   let frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-9/16)<.005&&frame.inside);assert.deepEqual(frame.fits,['cover','cover']);
@@ -67,6 +92,7 @@ try{
   await until(()=>window.app.composer.session.placements.length>0);
   await page.locator('[data-action=prepare]').click({force:true});
   await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing,{timeout:20000});
+  assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'preview');
   console.log('Song analyzed and preview prepared.');
   assert.equal(await page.evaluate(()=>window.app.composer.prepared.snapshot.scripts.L0.metadata.chapters[1].startTime),1000);
   await page.locator('[data-action=play]').click({force:true});
@@ -77,6 +103,12 @@ try{
   await until(()=>!window.app.composer.player.aligning);
   const clocks=await page.evaluate(()=>{const p=window.app.composer.player;return {audio:p.audio.currentTime,video:p.videos[p.active].currentTime,start:p.current.start_ms,paused:p.audio.paused};});
   assert.ok(Math.abs(clocks.video-(clocks.audio-clocks.start/1000))<.08);assert.ok(clocks.paused);
+  await page.locator('[data-field=playback-mode]').selectOption('song');
+  assert.ok(await page.evaluate(()=>!window.app.composer.prepared&&Math.abs(window.app.composer.player.audio.currentTime-4.1)<.01&&window.app.composer.player.videos.every(v=>v.paused&&v.hidden)));
+  await page.locator('[data-action=play]').click({force:true});await until(()=>window.app.composer.player.audio.currentTime>4.35);
+  await page.locator('[data-action=play]').click({force:true});await page.evaluate(()=>window.app.composer.setPosition(4100));
+  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  assert.ok(await page.evaluate(()=>Math.abs(window.app.composer.player.audio.currentTime-4.1)<.01&&!window.app.composer.player.intent),'preparing preview preserves the listening position and stays paused');
   const placements=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
   await page.locator('[data-field=output-preset]').selectOption('landscape-720');
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'format changes invalidate preview');
@@ -239,6 +271,10 @@ try{
   await page.locator('[data-field=drafts]').uncheck({force:true});
   await page.evaluate(async()=>{window.releaseDraftPrepare();await window.pendingDraftPrepare;});
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'late preparation cannot restore excluded draft motion');
+  await page.locator('[data-field=playback-mode]').selectOption('song');
+  await page.locator('[data-action=play]').click({force:true});await until(()=>window.app.composer.player.audio.currentTime>.2);
+  assert.ok(await page.evaluate(()=>!window.app.composer.prepared&&!window.app.composer.devices.active),'excluded drafts do not prevent song-only listening');
+  await page.locator('[data-action=stop]').click({force:true});
   console.log('PASS: draft opt-in, independent stars, assembly, manual choices, preview rejection, saved choice, undo/redo, and late preparation invalidation.');
   assert.deepEqual(errors,[]);
   console.log('PASS: actual Electron launch, song analysis, assembly, clip switching, pause/seek, recipe save, song motion, FFmpeg export, and six-axis FunSync playback handoff.');

@@ -14,24 +14,43 @@ export class CompositionPlayer {
     this.wrapper = { video: audio, get currentTime(){return audio.currentTime;}, get duration(){return audio.duration;},
       get paused(){return audio.paused;}, get playbackRate(){return audio.playbackRate;} };
   }
-  load(snapshot, clips) {
-    this.pause(); this.snapshot = snapshot; this.clips = new Map(clips.map(c => [c.id,c])); this.current = null;
-    this.audio.src = snapshot.song.url; this.audio.load();
-    for (const v of this.videos) { v.pause(); v.removeAttribute('src'); v.dataset.placement = ''; v.load(); }
-    return this.seek(0);
+  setSong(song) {
+    this.pause(); this.song = song; this.snapshot = null; this.current = null; this.clips = new Map();
+    this.audio.src = song.url; this.audio.load();
+    for (const v of this.videos) { v.pause(); v.removeAttribute('src'); v.dataset.placement = ''; v.hidden = true; v.load(); }
+  }
+  loadSong(song, position = 0) {
+    this.setSong(song);
+    return this.seek(position);
+  }
+  load(snapshot, clips, position = 0) {
+    this.setSong({...snapshot.song, duration_ms:snapshot.duration_ms});
+    this.snapshot = snapshot; this.clips = new Map(clips.map(c => [c.id,c]));
+    return this.seek(position);
   }
   pause() { this.intent = false; this.generation++; this.audio.pause(); this.videos.forEach(v=>v.pause()); }
   async play() {
-    if (!this.snapshot) throw new Error('Prepare the session first.');
+    if (!this.song) throw new Error('Load a song first.');
     this.intent = true;
     if (this.audio.ended) this.audio.currentTime = 0;
-    await this.align(++this.generation);
+    const gen = ++this.generation;
+    if (this.snapshot) await this.align(gen); else await this.playAudio(gen);
+  }
+  async playAudio(gen) {
+    try {
+      await this.audio.play();
+      if (gen !== this.generation && !this.intent) this.audio.pause();
+    } catch (error) {
+      if (gen === this.generation) { this.pause(); throw error; }
+    }
   }
   async seek(ms) {
     const gen = ++this.generation;
     this.audio.pause(); this.videos.forEach(v=>v.pause());
-    this.audio.currentTime = Math.max(0,Math.min(ms,this.snapshot.duration_ms-1))/1000;
-    await this.align(gen);
+    if (!this.song) return;
+    this.audio.currentTime = Math.max(0,Math.min(ms,this.song.duration_ms-1))/1000;
+    this.onTick(this.audio.currentTime*1000);
+    if (this.snapshot) await this.align(gen); else if (this.intent) await this.playAudio(gen);
   }
   async ready(video, placement, time) {
     if (video.dataset.placement !== placement.id) {
@@ -70,9 +89,9 @@ export class CompositionPlayer {
     finally { if(this.aligning===gen)this.aligning=null; this.onTick(this.audio.currentTime*1000); }
   }
   tick() {
-    if(!this.snapshot)return;
+    if(!this.song)return;
     const time=this.audio.currentTime*1000;this.onTick(time);
-    if(!this.intent||this.aligning)return;
+    if(!this.snapshot||!this.intent||this.aligning)return;
     const video=this.videos[this.active];
     if(!this.current||time>=this.current.end_ms||video.readyState<2||Math.abs(video.currentTime-sourceTime(this.current,time)/1000)>.16)
       void this.align(++this.generation);

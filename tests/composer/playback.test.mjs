@@ -11,6 +11,33 @@ class Media extends EventTarget {
 const snapshot={session_id:'s',song:{url:'file:///synthetic.wav',name:'test'},duration_ms:4000,
   scripts:{L0:{actions:[{at:0,pos:50},{at:4000,pos:50}]},R0:{actions:[{at:0,pos:20},{at:4000,pos:80}]}},
   placements:[{id:'p0',clip_id:'c',start_ms:0,end_ms:2000,source_in_ms:100,rate:1},{id:'p1',clip_id:'c',start_ms:2000,end_ms:4000,source_in_ms:0,rate:1}]};
+test('song playback and seeking need no clips or motion; preview uses the selected song position',async()=>{
+  const audio=new Media(),videos=[new Media(),new Media()],ticks=[];
+  const player=new CompositionPlayer(audio,videos,time=>ticks.push(time),()=>{});
+  try{
+    await player.loadSong({...snapshot.song,duration_ms:4000});
+    assert.equal(player.snapshot,null);assert.ok(videos.every(v=>v.paused&&v.hidden));
+    await player.seek(1500);assert.equal(audio.currentTime,1.5);assert.ok(audio.paused);
+    await player.play();assert.equal(audio.paused,false);assert.ok(videos.every(v=>v.paused));
+    audio.currentTime=1.8;player.tick();assert.equal(ticks.at(-1),1800);
+    await player.seek(2500);assert.equal(audio.currentTime,2.5);assert.equal(audio.paused,false);
+    player.pause();await player.seek(0);assert.equal(audio.currentTime,0);assert.ok(audio.paused);
+    await player.load(snapshot,[{id:'c',url:'file:///synthetic.mp4'}],2500);
+    assert.equal(player.current.id,'p1');assert.equal(videos[player.active].currentTime,.5);assert.ok(audio.paused);
+    await player.loadSong({...snapshot.song,duration_ms:4000},2500);
+    assert.equal(player.snapshot,null);assert.equal(audio.currentTime,2.5);assert.ok(videos.every(v=>v.paused&&v.hidden));
+  }finally{player.destroy();}
+});
+test('a pending song-only play cannot resume after pause or song replacement',async()=>{
+  const audio=new Media(),player=new CompositionPlayer(audio,[new Media(),new Media()],()=>{},()=>{});
+  try{
+    await player.loadSong({...snapshot.song,duration_ms:4000});
+    let release;audio.play=()=>new Promise(resolve=>{release=()=>{audio.paused=false;resolve();};});
+    const first=player.play();player.pause();release();await first;assert.ok(audio.paused);assert.equal(player.intent,false);
+    const second=player.play();await player.loadSong({url:'file:///next.wav',duration_ms:1000});release();await second;
+    assert.ok(audio.paused);assert.equal(player.intent,false);assert.equal(audio.src,'file:///next.wav');
+  }finally{player.destroy();}
+});
 test('pause during an unfinished play never restarts the song',async()=>{
   const audio=new Media(),videos=[new Media(),new Media()],errors=[];
   const player=new CompositionPlayer(audio,videos,()=>{},message=>errors.push(message));

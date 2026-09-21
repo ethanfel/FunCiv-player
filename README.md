@@ -30,7 +30,7 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 
 ## Make a session
 
-1. Open **Composer**, then **Load song**. Audio is converted once to a cached stereo 48 kHz WAV. Recent imported songs are reusable.
+1. Open **Composer**, then **Load song**. Audio is converted once to a cached stereo 48 kHz WAV. Recent imported songs are reusable. **Playback → Song only** is selected: press **Play** to listen immediately, before analysis or clip selection. Pause, Volume, the position slider and clicking the waveform work here; **Stop** returns to the beginning. You can listen while deciding where to mark sections and clip regions.
 2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Change a clip's category directly in the library.
 3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections; rename them, change an end time, or click the waveform and use **Split section** / **Merge next section**.
 4. Select each section, check one or several **Folder categories**, and choose its motion policy:
@@ -39,7 +39,7 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
    - **Clip + marked gaps:** replace only the ranges you explicitly mark with song motion.
    - **Neutral hold:** keep all axes at their neutral position.
 5. Click **Assemble**. **New variation** changes unlocked choices; **Keep clips on variation** retains a section's placements. Click a clip on the timeline to replace it or adjust its source start and speed. Invalid source ranges are rejected.
-6. **Prepare preview**, then **Play**. The song is the master clock; two muted video decoders prepare consecutive cuts. A decoder stall pauses the audio clock. Editing pauses playback and invalidates its prepared snapshot. Undo/redo is available.
+6. **Prepare preview**, then **Play**. Preparation selects **Video + motion preview**, keeps your current song position and stays paused until Play. The song is the master clock; two muted video decoders prepare consecutive cuts. A decoder stall pauses the audio clock. Choose **Playback → Song only** to listen independently again, including while regions are empty or used clips need resolving. Song-only playback releases device sync. Editing pauses playback and invalidates its prepared snapshot. Undo/redo is available.
 7. **Save session** keeps the recipe, song analysis, and asset bindings. Reopening a saved recipe rejects changed media/scripts until you deliberately reassemble.
 
 Adjacent scripts use the same stem as the video: `clip.funscript` (L0), `clip.surge.funscript` (L1), `clip.sway.funscript` (L2), `clip.twist.funscript` (R0), `clip.roll.funscript` (R1), and `clip.pitch.funscript` (R2). Missing secondary axes stay neutral. Hidden folders and symlinks are excluded from recursive scans; ComfyUI's hidden review staging can be selected explicitly as a folder if needed.
