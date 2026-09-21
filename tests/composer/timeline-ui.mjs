@@ -46,6 +46,16 @@ export async function checkTimelineEditing(page,until){
 export async function chooseSectionFolders(page){
   const before=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
   await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
+  const viewport=page.viewportSize();
+  for(const size of [viewport,{width:828,height:815}]){
+    await page.setViewportSize(size);
+    const rows=await page.locator('.fc-folder-dialog .fc-check').evaluateAll(labels=>labels.map(label=>{
+      const row=label.getBoundingClientRect(),box=label.querySelector('input').getBoundingClientRect(),text=label.querySelector('span')?.getBoundingClientRect();
+      return {height:row.height,boxWidth:box.width,boxHeight:box.height,textWidth:text?.width};
+    }));
+    assert.ok(rows.every(row=>row.boxWidth<=24&&row.boxHeight<=24&&row.height<80&&(row.textWidth===undefined||row.textWidth>200)),`folder labels stay readable beside compact checkboxes at ${size.width}×${size.height}: ${JSON.stringify(rows)}`);
+  }
+  await page.setViewportSize(viewport);
   await page.locator('.fc-folder-dialog input[value=Pulse]').check({force:true});
   await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
   assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements)),before);

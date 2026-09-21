@@ -114,8 +114,10 @@
 .fc-section-select strong{overflow:hidden;text-overflow:ellipsis}
 .fc-folders-button{font-size:10px!important;overflow:hidden;text-overflow:ellipsis;text-align:left;background:#2a2940!important;border-color:#4d4367!important}
 .fc-folder-dialog{width:min(520px,90vw);max-height:80vh;overflow:auto}
+#composer-container .fc-dialog input[type=checkbox]{width:14px;height:14px;flex:0 0 14px;padding:0;margin:0}
+.fc-folder-dialog .fc-check{gap:10px}
 .fc-folder-dialog p{font-size:12px;color:#aab8ce;line-height:1.6}
 .fc-folder-choices{max-height:40vh;overflow:auto;border-block:1px solid #344158;margin:12px 0}
 .fc-folder-choices label{padding:8px;margin:0!important;border-bottom:1px solid #26344a;align-items:center}
-.fc-folder-choices span{flex:1;overflow-wrap:anywhere}.fc-folder-choices small{display:block;margin-top:3px;font-size:10px;color:#9daac2}
+.fc-folder-choices span{flex:1;min-width:0;overflow-wrap:anywhere}.fc-folder-choices small{display:block;margin-top:3px;font-size:10px;color:#9daac2}
 @media(max-width:800px){.fc-selection-bar{align-items:start;flex-direction:column}.fc-selection-bar>button{max-width:100%!important}.fc-timeline-tools small{width:100%}.fc-sections .fc-section-row{grid-template-columns:minmax(170px,1fr) minmax(110px,1fr)}.fc-section-select{grid-template-columns:20px 1fr}.fc-section-select>span:last-child{grid-column:2}.fc-sections .fc-section-row>span{display:none}}
