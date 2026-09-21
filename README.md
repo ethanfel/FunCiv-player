@@ -32,8 +32,8 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 
 1. Open **Composer**, then **Load song**. Audio is converted once to a cached stereo 48 kHz WAV. Recent imported songs are reusable.
 2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Change a clip's category directly in the library.
-3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections; rename them, change an end time, or click the waveform and use **Split at playhead** / **Merge next**.
-4. Select each section and choose its category and motion policy:
+3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections; rename them, change an end time, or click the waveform and use **Split section** / **Merge next section**.
+4. Select each section, check one or several **Folder categories**, and choose its motion policy:
    - **Clip motion:** use the clip's existing script.
    - **Follow song:** generate L0 motion from the song's tempo and energy, including when the clip has no script.
    - **Clip + marked gaps:** replace only the ranges you explicitly mark with song motion.
@@ -43,6 +43,19 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 7. **Save session** keeps the recipe, song analysis, and asset bindings. Reopening a saved recipe rejects changed media/scripts until you deliberately reassemble.
 
 Adjacent scripts use the same stem as the video: `clip.funscript` (L0), `clip.surge.funscript` (L1), `clip.sway.funscript` (L2), `clip.twist.funscript` (R0), `clip.roll.funscript` (R1), and `clip.pitch.funscript` (R2). Missing secondary axes stay neutral. Hidden folders and symlinks are excluded from recursive scans; ComfyUI's hidden review staging can be selected explicitly as a folder if needed.
+
+## Sections, clip regions, and source trimming
+
+The timeline has two levels. **Sections** are the large parts of your song: give each a name and a pool of folder categories. **Clip regions** are the smaller song intervals inside them; each explicit region receives one clip. Selecting a section opens its category/motion inspector; selecting a region opens its timing/source inspector.
+
+1. **Build category pools.** Click a section, then check the folders in **Folder categories · choose several**. Clips may come from any checked category. **Any category** removes that restriction. The star-rating and draft filters still apply. Changing a pool affects only that section.
+2. **Mark song regions.** Click the waveform at a start, press **Mark in**, move to the end, and press **Mark out**. The marked range must stay inside one section. **Cut at playhead** splits a clip region; **Merge next region** joins it with its neighbor. Unfilled regions show **Choose clip** and can be saved before selecting footage.
+3. **Try audio suggestions.** After analysis, choose 2, 4, 8 or 16 beats under **Suggested spacing**, then **Suggest audio cuts** for the selected section. Review the orange waveform markers and click **Apply suggested cuts**. These use beat groups and local changes in energy/tone; they do not identify verses or choruses by name. Suggestions do not change the timeline until applied. Manual cuts remain available when no usable beat grid or tempo is found.
+4. **Fill the regions.** **Assemble** chooses one qualifying clip long enough for each marked region. **New variation** changes unlocked choices while retaining region timing. If a clip is too short, split/shorten the region or choose a folder with longer clips; footage is not automatically slowed or looped. Unmarked sections retain automatic clip lengths. **Auto clip lengths** returns the selected section to that behavior after its locks are released.
+5. **Adjust song timing.** Drag a region's left or right handle to move the shared cut. Its neighbor adjusts with it, maintaining continuous video. Handles stay inside their section and clamp to available source duration. Use **Zoom** for small regions; **Snap to audio** aligns cuts to nearby beats/onsets, and holding **Alt** during a drag bypasses snapping. Exact song start/end fields are available in the region inspector.
+6. **Choose the source portion.** In **Clip region**, drag the purple **Source portion** window, use the Source start slider, or enter **Source in**. This slides a source window of the required duration without moving its song interval. The source preview lets you review that portion and pauses at its end. Source playback releases device sync. Editing the source or explicitly choosing a clip enables **Keep this clip and trim on variation**; uncheck it to allow another choice. Speed remains a separate, explicit control.
+
+Region edits, section splits/merges and source trims support undo/redo and are saved with the recipe. Large section edits preserve clip timings and source portions where possible; moving footage into a section with a different category pool can leave a region empty for reassignment. Preview/export requires every region to have a usable clip. Edits pause playback and require preparation again; funscripts use the same selected source range and speed as the video.
 
 ## Find available clips and choose ratings
 
@@ -97,7 +110,7 @@ npm run test:composer:ui    # real Electron window; requires a desktop display
 npm test                   # inherited FunSync unit suite
 ```
 
-The UI test creates a disposable profile and synthetic clips, checks availability views, rating sorting, 4★+/5★ selection, saved minimums and preview invalidation, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also checks portrait/landscape framing, fill/fit, saved output settings, undo/redo and actual 1080×1920 export. The service tests inspect rendered pixels from landscape, square, tall portrait, native portrait, anamorphic and rotated sources to verify centered crops without stretching. The UI test updates the screenshot above. Tests use no account credentials or physical devices.
+The UI test creates a disposable profile and synthetic clips, checks availability views, rating sorting, 4★+/5★ selection, saved minimums and preview invalidation, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also checks category pools, empty song regions, actual mouse drags for cuts and source windows, kept trims, audio suggestions, section merging, restored recipes, portrait/landscape framing, fill/fit, undo/redo and actual 1080×1920 export. The service tests inspect rendered pixels from landscape, square, tall portrait, native portrait, anamorphic and rotated sources to verify centered crops without stretching. The UI test updates the screenshot above. Tests use no account credentials or physical devices.
 
 - [Detailed roadmap](PLAN.md)
 - [Integration research and reusable functions](docs/REUSE_MAP.md)

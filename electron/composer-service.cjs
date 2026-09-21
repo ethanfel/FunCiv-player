@@ -193,7 +193,7 @@ class ComposerService {
     const operation=async()=>{const {validateSession}=await core();validateSession(session);const file=this.sessionPath(session.id),old=await readJSON(file,null);
       if(old&&old.revision!==session.revision)throw new Error('A newer saved session exists. Reopen it before saving.');
       const next={...session,revision:session.revision+1};
-      if(session.placements.length)next.asset_bindings=this.bindings(await this.clipsForSession(session));
+      if(session.placements.length)next.asset_bindings=this.bindings(await this.clipsForSession({...session,placements:session.placements.filter(p=>p.clip_id)}));
       await atomic(file,next);return next;};
     this.sessionSaving=(this.sessionSaving||Promise.resolve()).catch(()=>{}).then(operation);return this.sessionSaving;
   }
@@ -213,6 +213,7 @@ class ComposerService {
   }
   bindings(clips){return Object.fromEntries(clips.map(c=>[c.id,{commit:c.commit||null,variant:c.variant_id||null,size:c.size,mtime:c.mtime,scripts:hash(JSON.stringify(c.scripts||{}))}]));}
   async prepare(session){
+    if(session.placements?.some(p=>!p.clip_id))throw new Error('Some clip regions are empty. Assemble or assign a clip to each region before playback.');
     const song=this.catalog.songs.find(s=>s.id===session.song?.id);
     if(!song||song.duration_ms!==session.song.duration_ms)throw new Error('Song is missing or its duration changed. Import it again.');
     await fs.access(song.path);

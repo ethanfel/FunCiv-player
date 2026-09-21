@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ComposerService, hash } from '../../electron/composer-service.cjs';
-import { createSession, arrange, clipRating } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, clipRating, planRegions, slipSource } from '../../packages/composer-core/index.mjs';
 
 test('local import → arrangement → persisted recipe → real FFmpeg render',async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-service-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
@@ -18,6 +18,12 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   const clipId=service.state().clips[0].id;await service.rate(clipId,5);await service.scan(library,signal);
   assert.equal(service.state().clips[0].user_rating,5,'local ratings survive rescans');
   const song=await service.importSong(path.join(root,'song.wav'),signal);assert.equal(song.duration_ms,2800);
+  const draft=createSession(song,1),planned=planRegions(draft,draft.sections[0].id,[700,1400,2100]);
+  const savedPlan=await service.saveSession(planned);assert.deepEqual((await service.loadSession(savedPlan.id)).placements,planned.placements);
+  await assert.rejects(()=>service.prepare(savedPlan),/regions are empty/);
+  const assigned=arrange(savedPlan,service.state().clips),trimmed=slipSource(assigned,assigned.placements[0].id,200,service.state().clips);
+  const savedTrim=await service.saveSession(trimmed);assert.equal((await service.loadSession(savedTrim.id)).placements[0].source_in_ms,200);
+  const trimPreview=await service.prepare(savedTrim);assert.equal(trimPreview.snapshot.placements[0].source_in_ms,200);
   const initial=arrange({...createSession(song,2),min_rating:5},service.state().clips);delete initial.output; // Legacy landscape recipe.
   const saved=await service.saveSession(initial);
   assert.equal(saved.revision,1);assert.deepEqual(await service.loadSession(saved.id),saved);
