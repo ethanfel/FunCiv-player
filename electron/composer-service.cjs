@@ -145,6 +145,7 @@ class ComposerService {
     const rows=content.toString('utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)),incoming=[];
     for(const row of rows){
       if(!/^[1-9]\d{0,15}$/.test(row.civitai_id)||!/^[a-f0-9]{64}$/.test(row.variant_id)||!Number.isFinite(row.duration_ms)||row.duration_ms<=0)throw new Error('Invalid dataset row.');
+      if(row.audio_sync!==undefined&&typeof row.audio_sync!=='boolean')throw new Error('Invalid dataset audio sync label.');
       const id=`hf-${row.civitai_id}-${row.variant_id.slice(0,20)}`,existing=this.catalog.clips.find(c=>c.id===id);
       const local=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
       const datasetCategories=categoryList(row.categories,'categories',160),categoryPaths=categoryList(row.category_paths,'category paths',4096);
@@ -153,10 +154,12 @@ class ComposerService {
       incoming.push({...existing,id,name:`Civitai ${row.civitai_id}`,civitai_id:row.civitai_id,variant_id:row.variant_id,
         duration_ms:row.duration_ms,categories:existing?.manual_categories?[...existing.categories]:[...automaticCategories],manual_categories:existing?.manual_categories===true,
         dataset_categories:datasetCategories,category_paths:categoryPaths,automatic_categories:[...automaticCategories],
+        audio_sync:row.audio_sync===true,
         review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
         preferred:row.preferred,origin:'dataset',commit:info.sha,remote_scripts:row.scripts,
         // An earlier prepared binding remains tied to its revision; fetching a new catalog doesn't replace saved sessions.
         scripts:existing?.commit===info.sha?existing.scripts:undefined,path:existing?.path||local?.path,url:existing?.url||local?.url,
+        ...(!existing?.path&&local?{size:local.size,mtime:local.mtime,width:local.width,height:local.height}:{}),
         available:!!(existing?.path||local?.path),binding:'duration-compatible'});
     }
     this.catalog.clips=this.catalog.clips.filter(c=>c.origin!=='dataset').concat(incoming);
@@ -234,7 +237,7 @@ class ComposerService {
       clips.push(structuredClone(c));}
     return clips;
   }
-  bindings(clips){return Object.fromEntries(clips.map(c=>[c.id,{commit:c.commit||null,variant:c.variant_id||null,size:c.size,mtime:c.mtime,scripts:hash(JSON.stringify(c.scripts||{}))}]));}
+  bindings(clips){return Object.fromEntries(clips.map(c=>[c.id,{commit:c.commit||null,variant:c.variant_id||null,size:c.size,mtime:c.mtime,scripts:hash(JSON.stringify(c.scripts||{})),...(c.audio_sync===true?{audio_sync:true}:{})}]));}
   async prepare(session){
     if(session.placements?.some(p=>!p.clip_id))throw new Error('Some clip regions are empty. Assemble or assign a clip to each region before playback.');
     const song=this.catalog.songs.find(s=>s.id===session.song?.id);

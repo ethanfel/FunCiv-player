@@ -34,9 +34,9 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 2. Click **＋ Folder** and choose the folder containing your downloaded clips. For your ComfyUI installation under `/media/p5/ComfyUI-Sam3D-to-Funscript`, choose the actual video library/output folder configured in its Folder node. Subfolders become initial categories. Change a clip's category directly in the library.
 3. Click **Analyze song** for an energy waveform and estimated BPM. Sessions start with six equal sections; rename them, change an end time, or seek on the waveform/ruler and use **Split song section** / **Merge song sections**.
 4. Click a section's **Folders** button, choose one or several categories, and **Apply folders**. Select the section to choose its motion policy in the inspector:
-   - **Clip motion:** use the clip's existing script.
+   - **Clip / audio sync:** use each clip's existing script, or generate song-driven strokes for clips marked Audio sync.
    - **Follow song:** generate L0 motion from the song's tempo and energy, including when the clip has no script.
-   - **Clip + marked gaps:** replace only the ranges you explicitly mark with song motion.
+   - **Clip + marked gaps:** use the same clip/audio-sync behavior, with song motion in your explicitly marked gaps as well.
    - **Neutral hold:** keep all axes at their neutral position.
 5. Click **Assemble**. **New variation** changes unlocked choices; **Keep clips on variation** retains a section's placements. Click a clip on the timeline to replace it or adjust its source start and speed. Invalid source ranges are rejected.
 6. **Prepare preview**, then **Play**. Preparation selects **Video + motion preview**, keeps your current song position and stays paused until Play. The song is the master clock; two muted video decoders prepare consecutive cuts. A decoder stall pauses the audio clock. Choose **Playback → Song only** to listen independently again, including while regions are empty or used clips need resolving. Song-only playback releases device sync. Editing pauses playback and invalidates its prepared snapshot. Undo/redo is available.
@@ -64,8 +64,9 @@ The timeline supports continuous **1×–256× zoom** with its slider, preset se
 In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync FunCiv Data** for dataset variants. **Show** offers:
 
 - **All catalog:** matching local clips and remote variants. Remote entries may need **Resolve video + scripts** before use.
-- **Ready with motion:** locally available videos with a loaded L0 script, ready for Clip motion.
+- **Ready for motion:** locally available videos with a loaded L0 script or an Audio sync marker. Marked clips need song analysis before preview.
 - **Local videos:** available videos, including those without motion scripts; use Follow song or Neutral hold for those.
+- **Audio sync clips:** clips marked to use song-driven motion. The rating and draft filters still apply.
 - **Used in session:** the clips currently placed on your timeline, with a usage count. This view retains used clips below the minimum or marked draft so you can identify conflicts.
 
 Each compact row shows its name, duration, stars, availability, review status and categories. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. HF clip details also show the published category names and relative folder paths; search matches those paths as well. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
@@ -91,6 +92,12 @@ Sam3D now publishes all variants as drafts by default (`review_policy: "all-draf
 **Sync FunCiv Data** imports the publisher's `categories` and `category_paths`. Short category names appear in section folder choices; full relative paths appear in clip details and are searchable. Clips may belong to several published categories. Draft status and star ratings remain independent.
 
 Existing automatic **Uncategorized** entries gain the published labels on the next sync. Labels you edited manually stay as overrides; click **Use imported categories** in that clip's details to restore the current imported set. Without published labels, Composer uses a matching local video's folder where available, or Uncategorized. Older snapshots without category fields remain readable. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
+
+HF's **Audio sync** marker is separate from folder categories, ratings and review status. Sync imports `audio_sync: true`; false or a missing field means unmarked. Marked clips show a badge and appear under **Show → Audio sync clips**. Changing a clip's category does not remove its Audio sync marker.
+
+In **Clip / audio sync** and **Clip + marked gaps** sections, marked video regions use L0 strokes generated from the loaded song's tempo and energy, even if a stored clip script is present. Other axes stay neutral during those regions, with the configured blend at cuts. Neighboring unmarked regions keep their own scripts. **Analyze song** before preparing preview or exporting. Video cuts, source trims and speed remain editable; generated strokes stay aligned to song time. **Follow song** still generates motion for the entire section, while **Neutral hold** keeps all axes neutral. The current implementation uses the loaded song analysis; a separate beat-stem input is not yet wired into Composer.
+
+When sync changes a used clip's Audio sync label, Composer pauses and invalidates prepared motion. Saved asset bindings also detect changed labels; reassemble to adopt updated assets, then prepare again. A locally available marked video can generate song motion without fetching its stored scripts; unresolved videos still need **Resolve video + scripts**.
 
 ## Playback, devices, and temporary video
 

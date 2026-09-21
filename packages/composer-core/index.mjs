@@ -17,6 +17,8 @@ const validRating = value => Number.isInteger(value) && value >= 0 && value <= 5
 export const clipRating = clip => validRating(clip?.user_rating) ? clip.user_rating : validRating(clip?.quality) ? clip.quality : 0;
 export const isDraftClip = clip => clip?.review_status === 'draft' || (clip?.origin === 'dataset' && clip.review_status !== 'approved');
 export const allowsClipReview = (session, clip) => session.include_drafts === true || !isDraftClip(clip);
+export const isAudioSyncClip = clip => clip?.audio_sync === true;
+export const hasMotionForSection = (clip, section) => ['song','hold'].includes(section.motion) || isAudioSyncClip(clip) || !!(clip.scripts?.L0 || clip.script_ready);
 
 export function assertClipReviews(session, clips) {
   const byId = new Map(clips.map(c => [c.id, c]));
@@ -132,7 +134,7 @@ export function arrange(session, clips) {
     }
     const pool = clips.filter(c => allowsClipReview(session,c) && c.available !== false && c.duration_ms >= 100 && clipRating(c) >= (session.min_rating ?? 0) &&
       matchesSection(c,section) &&
-      (['song','hold'].includes(section.motion) || c.scripts?.L0 || c.script_ready)).sort((a,b) => a.id.localeCompare(b.id));
+      hasMotionForSection(c,section)).sort((a,b) => a.id.localeCompare(b.id));
     if (!pool.length) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check the minimum rating, draft filter and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
     if(section.planned_regions){
       validateRegionCoverage(section,existing);
@@ -175,6 +177,12 @@ export function validateCoverage(session) {
   if (previous !== Math.round(session.song.duration_ms)) throw new Error('The video timeline does not cover the song. Assemble it first.');
 }
 
+function songMotion(session,section,start,end){
+  if(!session.analysis)throw new Error('Analyze the song before generating song motion, including Audio sync clips.');
+  return generateBeatSection({analysis:session.analysis,offset_ms:0},start,end,{mode:'manual',shape:'Sine Wave',timing:'tempo',
+    bpm:session.bpm||session.analysis.bpm||120,amplitude:section.strength/2,center:50,followEnergy:true,seed:session.seed}).actions;
+}
+
 export function compile(session, clips) {
   validateSession(session, clips); validateCoverage(session); assertClipRatings(session, clips); assertClipReviews(session, clips);
   const duration = Math.round(session.song.duration_ms), byId = new Map(clips.map(c => [c.id,c]));
@@ -184,25 +192,22 @@ export function compile(session, clips) {
     if (['clip','gaps'].includes(section.motion)) {
       for (const p of session.placements.filter(p => p.section_id === section.id)) {
         const clip = byId.get(p.clip_id);
-        if (!clip.scripts?.L0) throw new Error(`${clip.name} has no L0 script. Choose song motion or another clip.`);
+        const audioSync=isAudioSyncClip(clip),generated=audioSync?songMotion(session,section,p.start_ms,p.end_ms):null;
+        if (!audioSync&&!clip.scripts?.L0) throw new Error(`${clip.name} has no L0 script. Choose song motion or another clip.`);
         for (const axis of AXES) {
-          const input = clip.scripts[axis]?.actions;
-          const actions = input ? remapActions(input,p,section.strength) : [{at:p.start_ms,pos:50},{at:p.end_ms,pos:50}];
+          const input = !audioSync&&clip.scripts?.[axis]?.actions;
+          const actions = audioSync&&axis==='L0'?generated:input?remapActions(input,p,section.strength):[{at:p.start_ms,pos:50},{at:p.end_ms,pos:50}];
           tracks[axis] = spliceActions(tracks[axis], actions, p.start_ms, p.end_ms, 'blend', session.blend_ms);
         }
-        blocks.push({ start_ms:p.start_ms,end_ms:p.end_ms,kind:'clip',clip_id:clip.id });
-        if (isDraftClip(clip)) warnings.push(`${clip.name}: unreviewed draft script`);
+        blocks.push({ start_ms:p.start_ms,end_ms:p.end_ms,kind:audioSync?'song':'clip',clip_id:clip.id,...(audioSync?{audio_sync:true}:{}) });
+        if (!audioSync&&isDraftClip(clip)) warnings.push(`${clip.name}: unreviewed draft script`);
       }
     }
     if (section.motion === 'song' || section.motion === 'gaps') {
       const ranges = section.motion === 'song' ? [[section.start_ms,section.end_ms]] : (section.gaps || []);
       for (const [start,end] of ranges) {
         if (!Number.isFinite(start) || !Number.isFinite(end) || start < section.start_ms || end > section.end_ms || end <= start) throw new Error('Marked motion gaps must stay inside their section.');
-        if (!session.analysis) throw new Error('Analyze the song before generating song motion.');
-        const audio = { analysis: session.analysis, offset_ms:0 };
-        const generated = generateBeatSection(audio,start,end,{ mode:'manual',shape:'Sine Wave',timing:'tempo',
-          bpm: session.bpm || session.analysis.bpm || 120, amplitude:section.strength/2, center:50, followEnergy:true, seed:session.seed });
-        tracks.L0 = spliceActions(tracks.L0,generated.actions,start,end,'blend',session.blend_ms);
+        tracks.L0 = spliceActions(tracks.L0,songMotion(session,section,start,end),start,end,'blend',session.blend_ms);
         blocks.push({start_ms:start,end_ms:end,kind:'song'});
       }
     }

@@ -1,4 +1,4 @@
-import { createSession, arrange, validateSession, clipRating, isDraftClip, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, validateSession, clipRating, isDraftClip, isAudioSyncClip, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from '../../packages/composer-core/index.mjs';
 import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
 import { CompositionPlayer } from './composition-player.js';
 import { ComposerDeviceSession } from './device-session.js';
@@ -9,8 +9,8 @@ import { ClipLibrary } from './clip-library.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
 const options=(values,selected)=>values.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');
-const policies=[['clip','Clip motion'],['song','Follow song'],['gaps','Clip + marked gaps'],['hold','Neutral hold']];
-const ready=clip=>clip.available&&clip.script_ready;
+const policies=[['clip','Clip / audio sync'],['song','Follow song'],['gaps','Clip + marked gaps'],['hold','Neutral hold']];
+const ready=clip=>clip.available&&(clip.script_ready||isAudioSyncClip(clip));
 
 export class ComposerView {
   constructor(app,root){
@@ -24,7 +24,7 @@ export class ComposerView {
         <aside class="fc-library"><div class="fc-panel-heading"><h2>Clip library</h2><button data-action="scan">＋ Folder</button></div>
           <div class="fc-library-tools"><button data-action="dataset">Sync FunCiv Data</button><button data-action="credentials">API settings</button></div>
           <label class="fc-search">Find clips<input data-field="search" type="search" placeholder="Name or category…"></label>
-          <label>Show<select data-field="library-view"><option value="all">All catalog</option><option value="ready">Ready with motion</option><option value="local">Local videos</option><option value="used">Used in session</option></select></label>
+          <label>Show<select data-field="library-view"><option value="all">All catalog</option><option value="ready">Ready for motion</option><option value="local">Local videos</option><option value="audio-sync">Audio sync clips</option><option value="used">Used in session</option></select></label>
           <details class="fc-library-filters"><summary>Filters <span class="fc-library-filter-summary"></span></summary>
           <label>Minimum rating for session<select data-field="min_rating">${options([[0,'All ratings (including unrated)'],[1,'1★ or higher'],[2,'2★ or higher'],[3,'3★ or higher'],[4,'4★ or higher'],[5,'5★ only']].map(([n,label])=>[String(n),label]),'0')}</select></label>
           <small>Applies to assembly, preview and export.</small>
@@ -76,10 +76,13 @@ export class ComposerView {
   hide(){this.visible=false;this.timeline.finishDrag();this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
   message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
   async refresh(){
-    this.catalog=await this.ipc('state');if(this.ratingConflicts().length||this.draftConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
+    const oldMotion=new Map(this.catalog.clips.map(c=>[c.id,isAudioSyncClip(c)]));
+    this.catalog=await this.ipc('state');
+    const changedMotion=this.session?.placements.some(p=>oldMotion.has(p.clip_id)&&oldMotion.get(p.clip_id)!==isAudioSyncClip(this.catalog.clips.find(c=>c.id===p.clip_id)));
+    if(changedMotion||this.ratingConflicts().length||this.draftConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
     this.root.querySelector('[data-field=saved]').innerHTML='<option value="">Open session…</option>'+options(this.saved.map(s=>[s.id,s.name]),'');
     this.root.querySelector('[data-field=song]').innerHTML='<option value="">Recent songs…</option>'+options(this.catalog.songs.map(s=>[s.id,s.name]),'');
-    this.renderLibrary();this.renderInspector();
+    this.renderLibrary();this.renderInspector();this.draw();
   }
   async job(action,payload){
     if(this.busy)throw new Error('Wait for the current task or cancel it.');
@@ -272,11 +275,11 @@ export class ComposerView {
     const used=new Map();for(const p of this.session?.placements||[])if(p.clip_id)used.set(p.clip_id,(used.get(p.clip_id)||0)+1);
     const clips=this.catalog.clips.filter(c=>
       (view==='used'?used.has(c.id):(this.includeDrafts||!isDraftClip(c))&&clipRating(c)>=minimum)&&
-      (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&`${c.name} ${(c.categories||[]).join(' ')} ${(c.category_paths||[]).join(' ')}`.toLowerCase().includes(search))
+      (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&(view!=='audio-sync'||isAudioSyncClip(c))&&`${c.name} ${(c.categories||[]).join(' ')} ${(c.category_paths||[]).join(' ')} ${isAudioSyncClip(c)?'audio sync':''}`.toLowerCase().includes(search))
       .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
     const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;
     warning.textContent=`${conflicts.length} used clip${conflicts.length===1?' is':'s are'} below ${minimum}★. Unlock affected sections and assemble again, or replace them. “Used in session” keeps these clips visible.`;
-    this.root.querySelector('.fc-library-count').textContent=`${clips.length} clips · ${clips.filter(ready).length} ready${clips.some(c=>!ready(c)&&c.origin==='dataset')?' · '+clips.filter(c=>!ready(c)&&c.origin==='dataset').length+' to resolve':''}${clips.some(c=>c.available&&!c.script_ready&&c.origin!=='dataset')?' · '+clips.filter(c=>c.available&&!c.script_ready&&c.origin!=='dataset').length+' video only':''}`;
+    this.root.querySelector('.fc-library-count').textContent=`${clips.length} clips · ${clips.filter(ready).length} ready${clips.some(c=>!ready(c)&&c.origin==='dataset')?' · '+clips.filter(c=>!ready(c)&&c.origin==='dataset').length+' to resolve':''}${clips.some(c=>c.available&&!ready(c)&&c.origin!=='dataset')?' · '+clips.filter(c=>c.available&&!ready(c)&&c.origin!=='dataset').length+' video only':''}`;
     const empty=!this.catalog.clips.length?'Add a local folder or sync FunCiv Data.':view==='used'?'No used clips match. Assemble a session or clear the search.':draftCount&&!this.includeDrafts?'Enable draft scripts or adjust the rating and view filters.':'No clips match these filters.';
     this.clipLibrary.render(clips,used,minimum,empty);
   }

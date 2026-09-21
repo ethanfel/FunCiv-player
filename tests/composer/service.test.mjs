@@ -168,10 +168,10 @@ test('HF all-drafts catalog resolves checked scripts against a local video and p
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-drafts-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const commit='a'.repeat(40),key=hash('civitai:123'),variant='b'.repeat(64),signal=new AbortController().signal,calls=[];
   const script=JSON.stringify({actions:[{at:0,pos:10},{at:500,pos:90},{at:1000,pos:10}]}),scriptPath=`scripts/${key.slice(0,2)}/${key}/${variant}.funscript`;
-  let review_policy='all-drafts',review_status='draft',corrupt=false;
+  let review_policy='all-drafts',review_status='draft',audio_sync,corrupt=false;
   const service=await new ComposerService(path.join(root,'data'),{fetchImpl:async url=>{
     calls.push(url);
-    const content=JSON.stringify({civitai_id:'123',variant_id:variant,duration_ms:1000,quality:5,review_status,scripts:{L0:{path:scriptPath,sha256:hash(script)}}})+'\n';
+    const content=JSON.stringify({civitai_id:'123',variant_id:variant,duration_ms:1000,quality:5,review_status,audio_sync,scripts:{L0:{path:scriptPath,sha256:hash(script)}}})+'\n';
     if(url.includes('/api/datasets/'))return new Response(JSON.stringify({sha:commit}));
     if(url.endsWith('manifest.json'))return new Response(JSON.stringify({schema:'s3f-public-funscripts/1',review_policy,files:{'data/catalog.jsonl':hash(content)}}));
     if(url.endsWith('data/catalog.jsonl'))return new Response(content);
@@ -210,6 +210,23 @@ test('HF all-drafts catalog resolves checked scripts against a local video and p
   review_policy='folder-approval';await service.refreshDataset();assert.equal(service.state().clips.find(c=>c.id===draft.id).review_status,'approved');
   review_policy=undefined;review_status=undefined;await service.refreshDataset();
   assert.equal(service.state().clips.find(c=>c.id===draft.id).review_status,'draft','missing review labels are unreviewed');
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).audio_sync,false,'older snapshots are unmarked');
+  audio_sync=true;service.catalog.clips=service.catalog.clips.filter(c=>c.origin!=='dataset');await service.refreshDataset();
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).audio_sync,true);
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).script_ready,false,'marked video can use song motion without fetching its stored scripts');
+  const audioSession=createSession(song,1);audioSession.include_drafts=true;audioSession.output={preset:'landscape-720',fit:'contain'};
+  audioSession.analysis={duration_ms:1000,bpm:120,confidence:1,waveform:Array(40).fill(1),beats:[],onsets:[]};
+  const audioSaved=await service.saveSession(arrange(audioSession,service.state().clips.filter(c=>c.id===draft.id)));
+  assert.equal(audioSaved.asset_bindings[draft.id].audio_sync,true);
+  const restarted=await new ComposerService(service.root).init();assert.equal(restarted.state().clips.find(c=>c.id===draft.id).audio_sync,true);
+  const audioPrepared=await restarted.prepare(await restarted.loadSession(audioSaved.id));
+  assert.ok(audioPrepared.snapshot.blocks.every(b=>b.kind==='song'&&b.audio_sync));
+  const audioRender=await restarted.render(audioSaved,signal);
+  assert.deepEqual(await restarted.renderScripts(audioRender.id),audioPrepared.snapshot.scripts,'audio-sync preview and actual export use identical strokes');
+  audio_sync=false;await service.refreshDataset();
+  await assert.rejects(()=>service.prepare(audioSaved),/differs from the saved session/,'a changed motion source cannot silently alter a pinned recipe');
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).audio_sync,false);
+  for(const invalid of ['true',1,null]){audio_sync=invalid;await assert.rejects(()=>service.refreshDataset(),/Invalid dataset audio sync/);}
 });
 
 test('dataset requires catalog checksum and rejects credential redirects',async t=>{

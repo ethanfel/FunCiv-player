@@ -75,6 +75,8 @@
 .fc-availability{padding:1px 5px;border-radius:3px;background:#222f44;color:#bfd1ee}
 .fc-availability.fc-ready{background:#183c36;color:#a8e0cb}
 .fc-draft-badge{color:#c4afd7}
+.fc-audio-sync-badge{color:#8ddcd4;font-size:10px;white-space:nowrap;flex-shrink:0}.fc-audio-sync-note{font-size:11px;line-height:1.5;padding:8px;border:1px solid #33565c;border-radius:5px;background:#142a31}
+.fc-clip-footer{display:flex;align-items:center;gap:6px;width:100%;min-width:0}.fc-clip-footer .fc-clip-category{min-width:0;flex:1}
 .fc-clip-category{font-size:10px;color:var(--fc-muted);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;max-width:100%}
 .fc-clip-details{padding-top:12px;margin-top:10px;border-top:1px solid #485674}
 .fc-clip-details[hidden]{display:none}

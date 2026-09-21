@@ -23,7 +23,7 @@ try{
   await service.scan(path.join(root,'clips'),signal);const song=await service.importSong(path.join(root,'Preview song.wav'),signal);
   await service.tag(service.catalog.clips.find(c=>c.name==='B.mp4').id,'Flow');
   service.catalog.clips.push({id:'synthetic-remote',name:'Remote fixture',origin:'dataset',quality:5,review_status:'approved',available:false,duration_ms:2000,categories:['Pulse']});await service.saveCatalog();
-  service.catalog.clips.push({...structuredClone(service.catalog.clips.find(c=>c.name==='A.mp4')),id:'synthetic-draft',name:'Draft fixture',origin:'dataset',quality:5,review_status:'draft',categories:['Draft','Alternate'],dataset_categories:['Draft','Alternate'],automatic_categories:['Draft','Alternate'],category_paths:['Season/Draft','Season/Alternate'],commit:'a'.repeat(40),variant_id:'b'.repeat(64)});
+  service.catalog.clips.push({...structuredClone(service.catalog.clips.find(c=>c.name==='A.mp4')),id:'synthetic-draft',name:'Draft fixture',origin:'dataset',quality:5,review_status:'draft',audio_sync:true,categories:['Draft','Alternate'],dataset_categories:['Draft','Alternate'],automatic_categories:['Draft','Alternate'],category_paths:['Season/Draft','Season/Alternate'],commit:'a'.repeat(40),variant_id:'b'.repeat(64)});
   service.catalog.clips.push({id:'synthetic-unrated-draft',name:'Unrated draft fixture',origin:'dataset',quality:0,review_status:'draft',available:false,duration_ms:2000,categories:['Draft']});
   await service.saveCatalog();
   app=await electron.launch({args:['--no-sandbox','--disable-gpu','--disable-frame-rate-limit','--disable-gpu-vsync',checkout],env:{...process.env,FUNCIV_USER_DATA:userData,CIVITAI_API_TOKEN:''},timeout:45000});
@@ -54,6 +54,10 @@ try{
   assert.equal(await page.locator('[data-action=reset-category]').count(),0);
   await page.locator('[data-field=search]').fill('');
   console.log('PASS: HF folder-path search, multiple category labels, persisted manual override and restoring imported categories.');
+  await page.locator('[data-field=library-view]').selectOption('audio-sync');assert.equal(await page.locator('.fc-clip').count(),1);
+  assert.equal(await page.locator('.fc-clips .fc-audio-sync-badge').count(),1);
+  assert.ok((await page.locator('.fc-clip-details .fc-audio-sync-note').textContent()).includes('song-generated'));
+  await page.locator('[data-field=library-view]').selectOption('all');
   await page.locator('[data-field=drafts]').uncheck({force:true});assert.equal(await page.locator('.fc-clip').count(),4);
   await page.locator('[data-field=library-view]').selectOption('ready');assert.equal(await page.locator('.fc-clip').count(),2);
   await page.locator('[data-field=library-view]').selectOption('local');assert.equal(await page.locator('.fc-clip').count(),3);
@@ -264,10 +268,23 @@ try{
   await page.evaluate(()=>window.app.composer.edit(s=>s.sections.forEach(section=>{section.categories=['Draft'];})));
   await page.locator('[data-action=assemble]').click({force:true});
   await until(()=>window.app.composer.session.placements.length===6&&window.app.composer.session.placements.every(p=>p.clip_id==='synthetic-draft'));
+  await page.locator('[data-action=prepare]').dispatchEvent('click');
+  await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('Analyze the song'));
+  await page.locator('[data-action=analyze]').click({force:true});await until(()=>!!window.app.composer.session.analysis);
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===1&&!window.app.composer.dirty);
   const draftSessionId=await page.evaluate(()=>window.app.composer.session.id),draftPlacements=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
   await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
-  assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.warnings.some(w=>w.includes('unreviewed draft'))));
+  assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.blocks.every(b=>b.kind==='song'&&b.audio_sync)));
+  await page.locator('.fc-placement-strip button[data-placement]').first().click({force:true});
+  assert.ok((await page.locator('.fc-region-inspector .fc-audio-sync-note').textContent()).includes('song-generated'));
+  await page.evaluate(async()=>{
+    const c=window.app.composer,ipc=c.ipc;
+    c.ipc=async function(action,payload){const result=await ipc.call(this,action,payload);if(action==='state')result.clips.find(clip=>clip.id==='synthetic-draft').audio_sync=false;return result;};
+    try{await c.refresh();}finally{c.ipc=ipc;}
+  });
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'changing a used audio-sync label invalidates its prepared motion');
+  await page.evaluate(()=>window.app.composer.refresh());
+  console.log('PASS: audio-sync badges/filter, analysis requirement, per-region song motion and invalidation after label changes.');
   await page.locator('[data-field=drafts]').uncheck({force:true});
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null);
   assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements)),draftPlacements,'disabling drafts preserves the editable timeline');
