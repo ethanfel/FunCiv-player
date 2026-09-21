@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSession,arrange,compile,validateSession,sectionCategories,planRegions,splitRegion,mergeRegion,moveRegionEdge,slipSource,splitSongSection,mergeSongSections,resizeSongSection,suggestRegionCuts,audioChangeMarkers,snapToAudio } from '../../packages/composer-core/index.mjs';
+import { createSession,arrange,compile,validateSession,sectionCategories,planRegions,splitRegion,mergeRegion,moveRegionEdge,slipSource,splitSongSection,mergeSongSections,resizeSongSection,suggestRegionCuts,audioChangeMarkers,snapToAudio,normalizeSectionNames } from '../../packages/composer-core/index.mjs';
 
 const song={id:'song',name:'song.wav',duration_ms:6000};
 const clips=['A','B','C'].map((name,i)=>({id:name,name,categories:[name],duration_ms:10000,quality:i===2?3:5,available:true,scripts:{L0:{actions:[{at:0,pos:0},{at:10000,pos:100}]}}}));
@@ -61,6 +61,23 @@ test('large section edits preserve clip regions, source trims and unaffected sec
   const merged=mergeSongSections(resized,0);assert.equal(merged.sections.length,1);assert.equal(merged.placements.length,resized.placements.length);assert.doesNotThrow(()=>compile(merged,clips));
   const partial=createSession(song,2),first=planRegions(partial,partial.sections[0].id,[1500]);
   assert.doesNotThrow(()=>validateSession(mergeSongSections(first,0)),'merging planned and unplanned sections leaves explicit empty regions');
+});
+
+test('repeated section splits create independent sections with distinct chronological names',()=>{
+  const initial=createSession(song,2);initial.sections[0].categories=['A','B'];
+  const first=splitSongSection(initial,2000),second=splitSongSection(first,1000),third=splitSongSection(second,1500);
+  assert.deepEqual(third.sections.map(s=>s.label),['Section 1','Section 2','Section 3','Section 4','Section 5']);
+  assert.equal(new Set(third.sections.map(s=>s.id)).size,5);assert.equal(third.sections.at(-1).id,initial.sections.at(-1).id);
+  third.sections[1].categories.push('C');assert.deepEqual(third.sections[0].categories,['A','B'],'folder choices are independent after splitting');
+  assert.doesNotThrow(()=>validateSession(third));
+  assert.deepEqual(mergeSongSections(third,1).sections.map(s=>s.label),['Section 1','Section 2','Section 3','Section 4']);
+  const named=createSession(song,1);named.sections[0].label='Verse';
+  assert.deepEqual(splitSongSection(splitSongSection(named,3000),1000).sections.map(s=>s.label),['Verse','Verse (3)','Verse (2)']);
+  const old=createSession(song,3);old.sections.map((s,i)=>{s.label=i?'Section 1 B':'Opening';});
+  assert.deepEqual(normalizeSectionNames(old).sections.map(s=>s.label),['Opening','Section 2','Section 3']);
+  assert.equal(old.sections[1].label,'Section 1 B','repair does not mutate the loaded recipe');
+  const custom=createSession(song,1);custom.sections[0].label='Section 9';custom.sections[0].auto_label=false;
+  assert.deepEqual(splitSongSection(custom,3000).sections.map(s=>s.label),['Section 9','Section 9 (2)'],'explicit user names are retained even when they resemble default names');
 });
 
 test('audio cuts use beat groups and texture changes; silence does not invent verse labels',()=>{

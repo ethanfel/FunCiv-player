@@ -1,15 +1,15 @@
-import { createSession, arrange, validateSession, clipRating, isDraftClip, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, validateSession, clipRating, isDraftClip, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from '../../packages/composer-core/index.mjs';
 import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
-import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { CompositionPlayer } from './composition-player.js';
 import { ComposerDeviceSession } from './device-session.js';
 import { RegionEditor, REGION_TOOLS } from './region-editor.js';
+import { TimelineViewport, TIMELINE_TOOLS } from './timeline-viewport.js';
+import { ClipLibrary } from './clip-library.js';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
 const options=(values,selected)=>values.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');
 const policies=[['clip','Clip motion'],['song','Follow song'],['gaps','Clip + marked gaps'],['hold','Neutral hold']];
-const ratingLabel=rating=>rating ? `${rating}★` : 'Unrated';
 const ready=clip=>clip.available&&clip.script_ready;
 
 export class ComposerView {
@@ -25,15 +25,17 @@ export class ComposerView {
           <div class="fc-library-tools"><button data-action="dataset">Sync FunCiv Data</button><button data-action="credentials">API settings</button></div>
           <label class="fc-search">Find clips<input data-field="search" type="search" placeholder="Name or category…"></label>
           <label>Show<select data-field="library-view"><option value="all">All catalog</option><option value="ready">Ready with motion</option><option value="local">Local videos</option><option value="used">Used in session</option></select></label>
+          <details class="fc-library-filters"><summary>Filters <span class="fc-library-filter-summary"></span></summary>
           <label>Minimum rating for session<select data-field="min_rating">${options([[0,'All ratings (including unrated)'],[1,'1★ or higher'],[2,'2★ or higher'],[3,'3★ or higher'],[4,'4★ or higher'],[5,'5★ only']].map(([n,label])=>[String(n),label]),'0')}</select></label>
           <small>Applies to assembly, preview and export.</small>
           <label>Sort clips<select data-field="library-sort"><option value="rating">Rating: highest first</option><option value="name">Name: A–Z</option></select></label>
           <label class="fc-check"><input data-field="drafts" type="checkbox" aria-describedby="fc-draft-help"> Include draft scripts (unreviewed)</label>
           <small id="fc-draft-help">Saved with this session. Star ratings do not mean a script has been reviewed.</small>
           <small class="fc-dataset-review" role="status" hidden></small>
+          </details>
           <div class="fc-draft-warning" role="status" hidden></div>
           <div class="fc-rating-warning" role="status" hidden></div>
-          <div class="fc-library-count"></div><div class="fc-clips"></div>
+          <div class="fc-library-count"></div><div class="fc-clips" aria-label="Clip library results"></div><div class="fc-clip-details" hidden></div>
         </aside>
         <main class="fc-main">
           <div class="fc-songbar"><div class="fc-song-title">No song loaded</div><div class="fc-actions"><select data-field="song" aria-label="Previously imported songs"><option value="">Recent songs…</option></select><button data-action="analyze">Analyze song</button></div></div>
@@ -42,8 +44,10 @@ export class ComposerView {
           <audio preload="auto"></audio>
           <div class="fc-transport"><label>Playback<select data-field="playback-mode"><option value="song">Song only</option><option value="preview">Video + motion preview</option></select></label><button data-action="play" aria-label="Play or pause song">▶ Play</button><button data-action="stop">Stop</button><output class="fc-time">0:00.0</output><input data-field="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Session position"><label>Volume<input data-field="volume" type="range" min="0" max="1" value="0.7" step="0.05"></label></div>
           ${REGION_TOOLS}
-          <div class="fc-timeline-viewport"><div class="fc-timeline"><div class="fc-audio-markers"></div><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-track-label">Sections · folder category pools</div><div class="fc-section-strip"></div><div class="fc-track-label">Clip regions · drag edges to change timing</div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="68" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div></div>
-          <div class="fc-editbar"><button data-action="undo">↶ Undo</button><button data-action="redo">↷ Redo</button><button data-action="split">Split section</button><button data-action="merge">Merge next section</button><span class="fc-spacer"></span><button data-action="assemble" class="fc-primary">Assemble</button><button data-action="variation">New variation</button></div>
+          ${TIMELINE_TOOLS}
+          <div class="fc-selection-bar">Select a song section to choose its folders.</div>
+          <div class="fc-timeline-viewport"><div class="fc-timeline"><div class="fc-audio-markers"></div><canvas class="fc-ruler" height="28" aria-label="Song time ruler"></canvas><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-track-label">Song sections · each has its own folder choices</div><div class="fc-section-strip"></div><div class="fc-track-label">Clip regions · smaller cuts inside song sections</div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="64" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div></div>
+          <div class="fc-editbar"><button data-action="undo">↶ Undo</button><button data-action="redo">↷ Redo</button><button data-action="split" title="Create two independent song sections at the playhead, each with its own folders">Split song section</button><button data-action="merge">Merge song sections</button><span class="fc-spacer"></span><button data-action="assemble" class="fc-primary">Assemble</button><button data-action="variation">New variation</button></div>
           <div class="fc-sections"></div>
           <div class="fc-footer"><div class="fc-summary">Choose a song to build your timeline.</div><div class="fc-actions"><button data-action="prepare">Prepare preview</button><button data-action="devices">Prepare device sync</button><button data-action="render" class="fc-primary">Render temporary video</button></div></div>
           <div class="fc-render" hidden></div>
@@ -54,23 +58,22 @@ export class ComposerView {
     this.player.audio.volume=.7;
     this.root.addEventListener('click',event=>{
       const button=event.target.closest('[data-action]');if(button){void this.action(button.dataset.action,button).catch(e=>this.message(e.message,true));return;}
-      const section=event.target.closest('[data-section]');if(section){this.selected=Number(section.dataset.section);this.inspectorMode='section';this.selectedPlacement=this.session?.placements.find(p=>p.section_id===this.session.sections[this.selected].id)?.id;this.renderEditor();}
+      const section=event.target.closest('[data-section]');if(section)this.selectSection(Number(section.dataset.section));
       const placement=event.target.closest('button[data-placement]');if(placement)this.regionEditor.select(placement.dataset.placement);
     });
     this.root.addEventListener('change',event=>{void this.change(event.target).catch(e=>{this.message(e.message,true);this.renderEditor();});});
     this.root.querySelector('[data-field=search]').addEventListener('input',()=>this.renderLibrary());
     this.root.addEventListener('keydown',event=>{if(event.code==='Space'&&!['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName)){event.preventDefault();event.stopPropagation();void this.action('play').catch(e=>this.message(e.message,true));}});
-    for(const canvas of this.root.querySelectorAll('canvas'))canvas.addEventListener('click',event=>{
-      if(!this.session)return;const rect=canvas.getBoundingClientRect();this.setPosition((event.clientX-rect.left)/rect.width*this.session.song.duration_ms);
-    });
     this.resizeObserver=new ResizeObserver(()=>this.draw());this.resizeObserver.observe(this.root);
     this.regionEditor=new RegionEditor(this);
+    this.timeline=new TimelineViewport(this);this.clipLibrary=new ClipLibrary(this);
+    this.root.querySelector('[data-field=zoom-slider]').addEventListener('input',event=>this.timeline.setZoom(2**Number(event.target.value)));
     this.renderOutput();
     window.addEventListener('beforeunload',event=>{if(this.dirty){event.preventDefault();event.returnValue='';}});
   }
   ipc(action,payload){return window.funsync.composer(action,payload);}
   async show(){this.visible=true;await this.refresh();this.renderEditor();}
-  hide(){this.visible=false;this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
+  hide(){this.visible=false;this.timeline.finishDrag();this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
   message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
   async refresh(){
     this.catalog=await this.ipc('state');if(this.ratingConflicts().length||this.draftConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
@@ -98,8 +101,9 @@ export class ComposerView {
     validateSession(next);this.history.record(this.session);this.invalidate();this.session=next;this.dirty=true;this.renderEditor();
   }
   newSong(song){
-    this.analysisGeneration++;this.invalidate();const minimum=this.minimumRating(),drafts=this.includeDrafts;this.session=createSession(song);this.session.min_rating=minimum;this.session.include_drafts=drafts;this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.loadSongPlayback();this.renderEditor();this.message('Song ready. Press Play to listen and mark sections; analyze it when ready.');
+    this.analysisGeneration++;this.invalidate();const minimum=this.minimumRating(),drafts=this.includeDrafts;this.session=createSession(song);this.session.min_rating=minimum;this.session.include_drafts=drafts;this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.timeline.reset();this.loadSongPlayback();this.renderEditor();this.message('Song ready. Press Play to listen and mark sections; analyze it when ready.');
   }
+  selectSection(index){if(!this.session)return;this.selected=Math.max(0,Math.min(index,this.session.sections.length-1));this.inspectorMode='section';this.selectedPlacement=this.session.placements.find(p=>p.section_id===this.session.sections[this.selected].id)?.id;this.renderEditor();}
   songOnly(){return this.root.querySelector('[data-field=playback-mode]').value==='song';}
   loadSongPlayback(){
     this.root.querySelector('[data-field=playback-mode]').value='song';
@@ -108,6 +112,10 @@ export class ComposerView {
   }
   discardOkay(){return !this.dirty||window.confirm('Leave this session without saving your changes?');}
   async action(action,button){
+    if(this.timeline.action(action))return;
+    if(action==='inspect-library-clip'){this.clipLibrary.select(button.dataset.id);return;}
+    if(action==='select-section'){this.selectSection(Number(button.dataset.index));return;}
+    if(action==='section-folders'){this.regionEditor.folders(button.dataset.id);return;}
     if(await this.regionEditor.action(action,button))return;
     if(action==='cancel'){this.analysisGeneration++;if(this.jobId)await this.ipc('cancel',{id:this.jobId});return;}
     if(action==='scan'){const result=await this.job('scan');if(result)this.message(`${result.count} clips indexed.${result.warnings.length?' '+result.warnings.slice(0,3).join(' · '):''}`);return;}
@@ -121,7 +129,7 @@ export class ComposerView {
     if(action==='undo'||action==='redo'){this.invalidate();this.session=this.history[action](this.session);this.session.revision=this.revisions.get(this.session.id)??this.session.revision;this.dirty=true;this.selected=Math.min(this.selected,this.session.sections.length-1);this.renderEditor();return;}
     if(action==='analyze'){await this.analyze();return;}
     if(action==='split'){
-      this.regionEditor.commit(splitSongSection(this.session,Math.round(this.position||0)));return;
+      const at=Math.round(this.position||0),next=splitSongSection(this.session,at);this.selected=next.sections.findIndex(s=>s.start_ms===at);this.inspectorMode='section';this.regionEditor.commit(next);this.message('Song section split. Both sections are independent and can use different folders.');return;
     }
     if(action==='merge'){this.regionEditor.commit(mergeSongSections(this.session,this.selected));return;}
     if(action==='assemble'||action==='variation'){
@@ -197,7 +205,7 @@ export class ComposerView {
     if(field==='tag'){this.catalog=await this.ipc('tag',{id:input.dataset.id,category:input.value});this.renderLibrary();this.renderInspector();return;}
     if(field==='song'){if(input.value&&this.discardOkay())this.newSong(this.catalog.songs.find(s=>s.id===input.value));return;}
     if(field==='saved'){
-      if(!input.value||!this.discardOkay())return;const session=await this.ipc('load',{id:input.value});validateSession(session);this.analysisGeneration++;this.invalidate();this.session=session;this.revisions.set(session.id,session.revision);this.history=new History();this.selected=0;this.position=0;this.dirty=false;this.loadSongPlayback();this.renderEditor();this.message('Session restored. Press Play to listen, or Prepare preview for video and motion.');return;
+      if(!input.value||!this.discardOkay())return;const saved=await this.ipc('load',{id:input.value}),session=normalizeSectionNames(saved);validateSession(session);this.analysisGeneration++;this.invalidate();this.session=session;this.revisions.set(session.id,session.revision);this.history=new History();this.selected=0;this.position=0;this.dirty=session.sections.some((s,i)=>s.label!==saved.sections[i].label);this.timeline.reset();this.loadSongPlayback();this.renderEditor();this.message(this.dirty?'Session restored. Default section names repaired; save to keep them.':'Session restored. Press Play to listen, or Prepare preview for video and motion.');return;
     }
     if(field==='output-preset'||field==='output-fit'){
       this.edit(s=>{const current=outputSettings(s);s.output=field==='output-preset'?{preset:input.value,fit:'cover'}:{preset:current.preset,fit:input.value};},{keepPlacements:true});
@@ -211,7 +219,7 @@ export class ComposerView {
       this.regionEditor.commit(resizeSongSection(this.session,this.session.sections[this.selected].id,Math.round(Number(input.value)*1000),this.catalog.clips));return;
     }
     if(['category','motion','strength','label','locked'].includes(field)){
-      this.edit(s=>{const section=s.sections[this.selected];section[field]=field==='locked'?input.checked:field==='strength'?Number(input.value):input.value;},{keepPlacements:field!=='category'});
+      this.edit(s=>{const section=s.sections[this.selected];section[field]=field==='locked'?input.checked:field==='strength'?Number(input.value):input.value;if(field==='label')section.auto_label=false;},{keepPlacements:field!=='category'});
     }
   }
   setPosition(time){if(!this.session)return;this.position=Math.max(0,Math.min(Math.round(time),this.session.song.duration_ms-1));void this.player.seek(this.position).catch(e=>this.message(e.message,true));this.tick(this.position);}
@@ -254,6 +262,7 @@ export class ComposerView {
     const view=this.root.querySelector('[data-field=library-view]').value,sort=this.root.querySelector('[data-field=library-sort]').value,minimum=this.minimumRating();
     this.root.querySelector('[data-field=min_rating]').value=String(minimum);
     this.root.querySelector('[data-field=drafts]').checked=this.includeDrafts;
+    this.root.querySelector('.fc-library-filter-summary').textContent=`${minimum?minimum+'★+':'All ratings'} · drafts ${this.includeDrafts?'on':'off'}`;
     const draftCount=this.catalog.clips.filter(isDraftClip).length,review=this.root.querySelector('.fc-dataset-review');
     review.hidden=!draftCount;
     review.textContent=`${this.catalog.dataset?.review_policy==='all-drafts'?'This dataset publishes all variants as unreviewed drafts. ':''}${draftCount} draft variant${draftCount===1?'':'s'} ${this.includeDrafts?'included before rating and availability filters.':'hidden from browsing and assembly. Enable Include draft scripts to use them.'}`;
@@ -266,20 +275,11 @@ export class ComposerView {
       .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
     const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;
     warning.textContent=`${conflicts.length} used clip${conflicts.length===1?' is':'s are'} below ${minimum}★. Unlock affected sections and assemble again, or replace them. “Used in session” keeps these clips visible.`;
-    this.root.querySelector('.fc-library-count').textContent=`${clips.length} shown · ${clips.filter(ready).length} ready with motion · ${clips.filter(c=>c.available&&!c.script_ready).length} video only · ${clips.filter(c=>!c.available).length} unavailable`;
-    this.root.querySelector('.fc-clips').innerHTML=clips.map(c=>{
-      const rating=clipRating(c),override=c.user_rating!==undefined;
-      const status=ready(c)?'Ready · video + motion':c.origin==='dataset'?'Needs resolving · video + scripts':c.available?'Video only · use Follow song':'Unavailable · rescan folder';
-      return `<article class="fc-clip" data-clip-id="${esc(c.id)}" data-rating="${rating}"><div class="fc-clip-top"><strong title="${esc(c.name)}">${esc(c.name)}</strong><span>${stamp(c.duration_ms)}</span></div>
-        <div class="fc-clip-rating" aria-label="${rating?`${rating} out of 5 stars`:'Unrated'}">${rating?'★'.repeat(rating)+'☆'.repeat(5-rating):'Unrated'}<small>${override?'Your rating':c.origin==='dataset'?'Dataset rating':'No rating yet'}</small></div>
-        <div class="fc-clip-availability ${ready(c)?'fc-ready':''}">${status}</div>
-        <small>${isDraftClip(c)?'Draft · unreviewed':esc(c.review_status)}${c.script_ready?' · '+esc((c.axes||[]).join(' / ')):''}${used.has(c.id)?` · Used ${used.get(c.id)}×`:''}</small>
-        ${!this.includeDrafts&&isDraftClip(c)?'<div class="fc-draft-warning">Draft scripts are disabled for this session</div>':''}
-        ${rating<minimum?'<div class="fc-rating-warning">Below session minimum</div>':''}
-        <label>Rate this clip<select data-field="rating" data-id="${esc(c.id)}" aria-label="Rating for ${esc(c.name)}">${options([['',c.origin==='dataset'?`Use dataset rating (${ratingLabel(clipRating({quality:c.quality}))})`:'No local rating'],...Array.from({length:6},(_,n)=>[String(n),ratingLabel(n)])],override?String(c.user_rating):'')}</select></label>
-        <label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${ready(c)?'Verify / refresh':'Resolve video + scripts'}</button>`:''}</article>`;
-    }).join('')||`<p class="fc-empty">${!this.catalog.clips.length?'Add your downloaded clip folder, or sync the dataset to browse script variants.':view==='used'?'No used clips match. Assemble a session or clear the search.':draftCount&&!this.includeDrafts?'No clips match. Enable Include draft scripts to browse unreviewed variants, or adjust the rating and view filters.':'No clips match. Lower the minimum rating, change the view, or clear the search.'}</p>`;
+    this.root.querySelector('.fc-library-count').textContent=`${clips.length} clips · ${clips.filter(ready).length} ready${clips.some(c=>!ready(c)&&c.origin==='dataset')?' · '+clips.filter(c=>!ready(c)&&c.origin==='dataset').length+' to resolve':''}${clips.some(c=>c.available&&!c.script_ready&&c.origin!=='dataset')?' · '+clips.filter(c=>c.available&&!c.script_ready&&c.origin!=='dataset').length+' video only':''}`;
+    const empty=!this.catalog.clips.length?'Add a local folder or sync FunCiv Data.':view==='used'?'No used clips match. Assemble a session or clear the search.':draftCount&&!this.includeDrafts?'Enable draft scripts or adjust the rating and view filters.':'No clips match these filters.';
+    this.clipLibrary.render(clips,used,minimum,empty);
   }
+
   renderOutput(){
     const output=outputSettings(this.session||{output:DEFAULT_OUTPUT});
     for(const key of ['preset','fit']){const input=this.root.querySelector(`[data-field=output-${key}]`);input.value=output[key];input.disabled=!this.session;}
@@ -292,9 +292,11 @@ export class ComposerView {
     if(!s.placements.some(p=>p.id===this.selectedPlacement&&p.section_id===s.sections[this.selected].id))this.selectedPlacement=null;
     this.root.querySelector('.fc-song-title').textContent=`${s.name} · ${stamp(s.song.duration_ms)}`;
     this.root.querySelector('[data-field=seek]').max=s.song.duration_ms;
-    this.root.querySelector('.fc-section-strip').innerHTML=s.sections.map((section,i)=>`<button class="${i===this.selected?'fc-selected':''}" data-section="${i}" style="flex:${section.end_ms-section.start_ms}" title="${esc(section.label)}">${esc(section.label)}</button>`).join('');
+    const selectedSection=s.sections[this.selected],pool=sectionCategories(selectedSection).join(', ')||'Any folder';
+    this.root.querySelector('.fc-selection-bar').innerHTML=`<div><small>SELECTED SONG SECTION ${this.selected+1}</small><strong>${esc(selectedSection.label)}</strong><span>${stamp(selectedSection.start_ms)} – ${stamp(selectedSection.end_ms)}</span></div><button data-action="section-folders" data-id="${esc(selectedSection.id)}" title="Choose folders for this section">Folders: ${esc(pool)} <span>✎</span></button>`;
+    this.root.querySelector('.fc-section-strip').innerHTML=s.sections.map((section,i)=>`<div class="fc-section-block ${i===this.selected?'fc-selected':''}" style="left:${section.start_ms/s.song.duration_ms*100}%;width:${(section.end_ms-section.start_ms)/s.song.duration_ms*100}%"><button data-action="select-section" data-index="${i}" title="Song section ${i+1}: ${esc(section.label)} · ${stamp(section.start_ms)}–${stamp(section.end_ms)}">${esc(section.label)}</button><button class="fc-section-folder" data-action="section-folders" data-id="${esc(section.id)}" title="Choose folders for ${esc(section.label)}">${esc(sectionCategories(section).join(', ')||'Choose folders · any')}</button></div>`).join('');
     this.regionEditor.renderTrack();
-    this.root.querySelector('.fc-sections').innerHTML=s.sections.map((section,i)=>`<button class="fc-section-row ${i===this.selected?'fc-selected':''}" data-section="${i}"><span>${String(i+1).padStart(2,'0')}</span><strong>${esc(section.label)}</strong><span>${stamp(section.start_ms)} – ${stamp(section.end_ms)}</span><span>${esc(sectionCategories(section).join(', ')||'Any category')}</span><span>${esc(policies.find(([id])=>id===section.motion)?.[1])}</span><span>${section.locked?'Locked':section.strength+'%'}</span></button>`).join('');
+    this.root.querySelector('.fc-sections').innerHTML=s.sections.map((section,i)=>`<div class="fc-section-row ${i===this.selected?'fc-selected':''}" data-section="${i}"><button class="fc-section-select" data-action="select-section" data-index="${i}"><span>${String(i+1).padStart(2,'0')}</span><strong>${esc(section.label)}</strong><span>${stamp(section.start_ms)} – ${stamp(section.end_ms)}</span></button><button class="fc-folders-button" data-action="section-folders" data-id="${esc(section.id)}" title="Change folder choices">Folders: ${esc(sectionCategories(section).join(', ')||'Any')}</button><span>${esc(policies.find(([id])=>id===section.motion)?.[1])}</span><span>${section.locked?'Locked':section.strength+'%'}</span></div>`).join('');
     this.root.querySelector('.fc-summary').textContent=`${s.sections.length} sections · ${s.placements.length} cuts · variation ${s.seed}${this.dirty?' · unsaved changes':''}`;
     this.renderInspector();this.draw();
   }
@@ -308,7 +310,7 @@ export class ComposerView {
     this.root.querySelector('.fc-inspector>h2').textContent=clipMode?'Clip region':'Section settings';
     this.root.querySelector('[data-action=inspector-clip]').disabled=!this.regionEditor.selected();
     for(const key of ['section','clip'])this.root.querySelector(`[data-action=inspector-${key}]`).classList.toggle('fc-active',clipMode===(key==='clip'));
-    this.root.querySelector('.fc-inspector-content').innerHTML=clipMode?`<div class="fc-region-inspector"><small>Section: ${esc(section.label)}</small>${this.regionEditor.inspectorHTML()}</div>`:sectionHTML;
+    this.root.querySelector('.fc-inspector-content').innerHTML=clipMode?`<div class="fc-region-inspector"><small>Song section ${this.selected+1}: ${esc(section.label)}</small><button data-action="section-folders" data-id="${esc(section.id)}">Choose section folders</button>${this.regionEditor.inspectorHTML()}</div>`:sectionHTML;
     this.regionEditor.bindSourcePreview();
     this.root.querySelector('.fc-session-settings').innerHTML=`<h2>Session</h2><label>Name<input data-field="name" value="${esc(s.name)}"></label><label>Song BPM<input data-field="bpm" type="number" min="30" max="300" value="${s.bpm||120}"></label><label>Motion blend (ms)<input data-field="blend_ms" type="number" min="0" max="2000" step="10" value="${s.blend_ms}"></label><p>Video uses clean cuts. Motion blends around each cut. Beat analysis is a starting point; sections remain editable.</p>`;
   }
@@ -321,19 +323,10 @@ export class ComposerView {
     this.root.querySelector('[data-action=devices]').textContent=this.devices.active?'Release device sync':'Prepare device sync';
     this.root.querySelector('.fc-preview-label').textContent=this.devices.active?'PREVIEW · DEVICE SYNC READY':this.songOnly()?'SONG ONLY · DEVICES OFF':this.prepared?'PREVIEW · DEVICES OFF':'PREVIEW · NEEDS PREPARATION';
     this.root.querySelector('.fc-playhead').style.left=`${Math.min(100,time/(this.session?.song.duration_ms||1)*100)}%`;
+    this.timeline?.follow(time);
     if(this.devices.active)this.app.sessionTracker?.setPlayback({currentTime:time/1000,duration:this.session.song.duration_ms/1000,paused:this.player.audio.paused});
   }
-  draw(){
-    if(!this.session)return;
-    for(const [selector,values,color] of [['.fc-wave',this.session.analysis?.waveform,'#7dd3fc'],['.fc-motion',this.prepared?.snapshot.scripts.L0.actions,'#c4b5fd']]){
-      const canvas=this.root.querySelector(selector),width=Math.floor(canvas.clientWidth);if(!width)continue;canvas.width=width*devicePixelRatio;canvas.height=64*devicePixelRatio;
-      const ctx=canvas.getContext('2d');ctx.scale(devicePixelRatio,devicePixelRatio);ctx.clearRect(0,0,width,64);ctx.strokeStyle=color;ctx.lineWidth=1.3;ctx.beginPath();
-      if(values?.length)for(let x=0;x<width;x++){
-        if(selector==='.fc-wave'){const h=values[Math.floor(x/width*values.length)]*28;ctx.moveTo(x,32-h);ctx.lineTo(x,32+h);}
-        else{const y=58-evaluate(values,x/width*this.session.song.duration_ms)*.52;if(x===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
-      }else{ctx.moveTo(0,32);ctx.lineTo(width,32);}ctx.stroke();
-    }
-  }
+  draw(){this.timeline?.draw();}
   credentials(){
     const dialog=document.createElement('dialog');dialog.className='fc-dialog';dialog.innerHTML=`<form method="dialog"><h2>Civitai access</h2><label>Site<select name="site">${options(['civitai.com','civitai.red','civitaired.com'].map(s=>[s,s]),this.site||'civitai.com')}</select></label><label>API key<input name="key" type="password" autocomplete="off" placeholder="Leave empty to keep the stored key"></label><p>The key stays in encrypted local storage. Videos are downloaded only when you resolve a selected clip.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="save">Save</button><button value="remove">Remove key</button></div></form>`;
     dialog.addEventListener('close',()=>{const value=dialog.querySelector('[name=key]').value;this.site=dialog.querySelector('[name=site]').value;dialog.querySelector('[name=key]').value='';const result=dialog.returnValue;dialog.remove();if(result==='remove'||(result==='save'&&value))void this.ipc('key',{value:result==='remove'?'':value}).then(()=>this.message('API settings saved.')).catch(e=>this.message(e.message,true));});

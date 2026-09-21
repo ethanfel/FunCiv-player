@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposerService } from '../../electron/composer-service.cjs';
+import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary } from './timeline-ui.mjs';
 
 const checkout=fileURLToPath(new URL('../..',import.meta.url));
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-electron-'));
@@ -37,6 +38,7 @@ try{
   console.log('Window and first-run language selection ready.');
   await page.locator('[data-view-id=composer]').click({force:true});
   await until(()=>document.querySelectorAll('.fc-clip').length===4);
+  await page.locator('.fc-library-filters summary').click({force:true});
   assert.equal(await page.locator('[data-field=drafts]').isChecked(),false);
   assert.ok((await page.locator('.fc-dataset-review').textContent()).includes('2 draft variants'));
   await page.locator('[data-field=drafts]').check({force:true});assert.equal(await page.locator('.fc-clip').count(),6);
@@ -44,9 +46,12 @@ try{
   await page.locator('[data-field=library-view]').selectOption('ready');assert.equal(await page.locator('.fc-clip').count(),2);
   await page.locator('[data-field=library-view]').selectOption('local');assert.equal(await page.locator('.fc-clip').count(),3);
   const ids=await page.evaluate(()=>Object.fromEntries(window.app.composer.catalog.clips.map(c=>[c.name,c.id])));
-  await page.locator(`[data-field=rating][data-id="${ids['A.mp4']}"]`).selectOption('4');
+  const rateClip=async(id,value)=>{await page.locator(`[data-action=inspect-library-clip][data-id="${id}"]`).click({force:true});await page.locator(`[data-field=rating][data-id="${id}"]`).selectOption(value);};
+  assert.equal(await page.locator('.fc-clips [data-field=rating]').count(),0,'rows contain no repeated edit forms');
+  assert.equal(await page.locator('.fc-clip-details [data-field=rating]').count(),1);
+  await rateClip(ids['A.mp4'],'4');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='A.mp4').user_rating===4);
-  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await rateClip(ids['B.mp4'],'5');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
   assert.equal(await page.locator('.fc-clip').first().getAttribute('data-clip-id'),ids['B.mp4']);
   await page.locator('[data-field=library-sort]').selectOption('name');assert.equal(await page.locator('.fc-clip').first().getAttribute('data-clip-id'),ids['A.mp4']);
@@ -81,6 +86,7 @@ try{
   await page.locator('[data-action=stop]').click({force:true});
   assert.ok(await page.evaluate(()=>window.app.composer.player.audio.paused&&window.app.composer.position===0&&window.app.composer.player.audio.currentTime===0));
   console.log('PASS: audible song signal before analysis or assembly, play/pause, waveform and slider seek, volume, stop, and devices off.');
+  await checkTimelineEditing(page,until);
   assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080');
   const framing=()=>{const root=document.querySelector('#composer-container'),frame=root.querySelector('.fc-preview').getBoundingClientRect(),stage=root.querySelector('.fc-preview-stage').getBoundingClientRect();return {ratio:frame.width/frame.height,inside:frame.width<=stage.width&&frame.height<=stage.height+1,fits:[...root.querySelectorAll('.fc-preview video')].map(v=>getComputedStyle(v).objectFit)};};
   let frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-9/16)<.005&&frame.inside);assert.deepEqual(frame.fits,['cover','cover']);
@@ -90,7 +96,7 @@ try{
   await until(()=>!!window.app.composer.session.analysis,{timeout:20000});
   await page.locator('[data-action=assemble]').click({force:true});
   await until(()=>window.app.composer.session.placements.length>0);
-  await page.locator('[data-action=prepare]').click({force:true});
+  await page.locator('[data-action=prepare]').dispatchEvent('click');
   await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing,{timeout:20000});
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'preview');
   console.log('Song analyzed and preview prepared.');
@@ -107,7 +113,7 @@ try{
   assert.ok(await page.evaluate(()=>!window.app.composer.prepared&&Math.abs(window.app.composer.player.audio.currentTime-4.1)<.01&&window.app.composer.player.videos.every(v=>v.paused&&v.hidden)));
   await page.locator('[data-action=play]').click({force:true});await until(()=>window.app.composer.player.audio.currentTime>4.35);
   await page.locator('[data-action=play]').click({force:true});await page.evaluate(()=>window.app.composer.setPosition(4100));
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   assert.ok(await page.evaluate(()=>Math.abs(window.app.composer.player.audio.currentTime-4.1)<.01&&!window.app.composer.player.intent),'preparing preview preserves the listening position and stays paused');
   const placements=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
   await page.locator('[data-field=output-preset]').selectOption('landscape-720');
@@ -118,13 +124,13 @@ try{
   await page.locator('[data-action=redo]').click({force:true});assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'contain');
   await page.locator('[data-field=output-preset]').selectOption('portrait-1080');assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'cover');
   assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements)),placements,'framing edits preserve the timeline');
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===1);
   await page.locator('[data-field=min_rating]').selectOption('5');
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'raising minimum invalidates preview');
   await page.locator('[data-field=library-view]').selectOption('used');assert.equal(await page.locator('.fc-clip').count(),2,'used clips below minimum stay visible');
   assert.ok(await page.locator('.fc-library > .fc-rating-warning').isVisible());
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('below the 5★ minimum'));
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('below the 5★ minimum'));
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null);
   const lowPlacement=await page.evaluate(()=>{const c=window.app.composer;return c.session.placements.find(p=>c.catalog.clips.find(clip=>clip.id===p.clip_id).user_rating===4).id;});
   await page.locator(`.fc-placement-strip button[data-placement="${lowPlacement}"]`).click({force:true});
@@ -141,11 +147,11 @@ try{
   assert.equal(await page.locator('[data-field=min_rating]').inputValue(),'5','saved minimum restored');
   assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080','saved format restored');
   assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'cover');
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
-  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('4');
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await rateClip(ids['B.mp4'],'4');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===4);
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'lowering a used rating invalidates preview');
-  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await rateClip(ids['B.mp4'],'5');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
   // Delay the IPC response after compilation, then change a used rating before it arrives.
   await page.evaluate(async()=>{
@@ -154,25 +160,23 @@ try{
     c.ipc=async function(action,payload){const result=await ipc.call(this,action,payload);if(action==='prepare'){compiled();await gate;}return result;};
     window.pendingComposerPrepare=c.prepare().finally(()=>{c.ipc=ipc;});await ready;
   });
-  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('4');
+  await rateClip(ids['B.mp4'],'4');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===4);
   await page.evaluate(async()=>{window.releaseComposerPrepare();await window.pendingComposerPrepare;delete window.pendingComposerPrepare;delete window.releaseComposerPrepare;});
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'a late IPC response cannot restore a preview after a rating edit');
-  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await rateClip(ids['B.mp4'],'5');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
   console.log('PASS: ready/local/used views, rating sort, 4★+/5★ assembly, stale-preview rejection, manual ratings and persisted minimum.');
-  await page.locator('.fc-section-row[data-section="0"]').click({force:true});
-  await page.locator('[data-field=section-category][data-category=Pulse]').check({force:true});
-  await page.locator('[data-field=section-category][data-category=Flow]').check({force:true});
-  assert.deepEqual(await page.evaluate(()=>window.app.composer.session.sections[0].categories),['Pulse','Flow']);
-  const untouched=await page.evaluate(()=>window.app.composer.session.placements.map(p=>p.id));
+  await page.locator('.fc-section-row[data-section="0"] [data-action=select-section]').click({force:true});
+  await chooseSectionFolders(page);
+  const untouched=await page.evaluate(()=>{const s=window.app.composer.session;return s.placements.filter(p=>p.section_id!==s.sections[0].id).map(p=>p.id);});
   await page.evaluate(()=>window.app.composer.setPosition(200));await page.locator('[data-action=mark-in]').click({force:true});
   await page.evaluate(()=>window.app.composer.setPosition(800));await page.locator('[data-action=mark-out]').click({force:true});
   await until(()=>window.app.composer.session.placements.some(p=>p.clip_id===null));
   assert.deepEqual(await page.evaluate(()=>{const c=window.app.composer;return c.session.placements.filter(p=>p.section_id===c.session.sections[0].id).map(p=>[p.start_ms,p.end_ms]);}),[[0,200],[200,800],[800,1000]]);
   assert.ok(await page.evaluate(ids=>ids.every(id=>window.app.composer.session.placements.some(p=>p.id===id)),untouched),'category and region edits preserve other sections');
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===3&&!window.app.composer.dirty);
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('regions are empty'));
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('regions are empty'));
   await page.locator('[data-action=assemble]').click({force:true});await until(()=>window.app.composer.session.placements.every(p=>p.clip_id));
   const middle=await page.evaluate(()=>window.app.composer.session.placements.find(p=>p.start_ms===200&&p.end_ms===800).id);
   await page.locator(`.fc-placement-strip button[data-placement="${middle}"]`).click({force:true});
@@ -194,7 +198,7 @@ try{
   assert.ok(Math.abs(trimmed.source_in_ms-500)<=2);assert.equal(trimmed.end_ms,afterRoll.end_ms);assert.equal(trimmed.locked,true);
   await page.locator('[data-action=variation]').click({force:true});
   assert.deepEqual(await page.evaluate(id=>window.app.composer.session.placements.find(p=>p.id===id),middle),trimmed);
-  await page.locator('.fc-section-row[data-section="1"]').click({force:true});await page.locator('[data-action=merge]').click({force:true});
+  await page.locator('.fc-section-row[data-section="1"] [data-action=select-section]').click({force:true});await page.locator('[data-action=merge]').click({force:true});
   await until(()=>window.app.composer.session.sections.length===5);
   await page.locator('[data-field=region-beats]').selectOption('2');await page.locator('[data-action=suggest-regions]').click({force:true});
   await until(()=>document.querySelectorAll('.fc-audio-markers span').length>0);
@@ -210,7 +214,7 @@ try{
   console.log('PASS: category pools, marked empty regions, drag cuts, drag source trim, undo/redo, kept trims, audio-cut suggestions, section merge and recipe restoration.');
   await page.locator('[data-action=inspector-section]').click({force:true});
   await page.locator('[data-field=motion]').selectOption('song');
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.blocks.some(b=>b.kind==='song')));
   await page.locator('[data-action=render]').click({force:true});await until(()=>!!window.app.composer.rendered,{timeout:45000});
   const rendered=await page.evaluate(()=>window.app.composer.rendered);const info=await service.probe(rendered.path,signal);
@@ -219,6 +223,7 @@ try{
   await page.locator('[data-action=inspector-clip]').click({force:true});
   await page.setViewportSize({width:1500,height:1600});
   await page.evaluate(()=>document.getElementById('composer-container').scrollTop=0);
+  await page.locator('.fc-library-filters').evaluate(el=>el.open=false);
   await page.screenshot({path:path.join(checkout,'docs','composer-implemented.png'),fullPage:true});
   await page.locator('[data-action=open-render]').click({force:true});
   await until(()=>window.app._currentView()==='player'&&window.app.funscriptEngine.isLoaded&&window.app.buttplugSync._axisActions.size===5);
@@ -229,6 +234,7 @@ try{
   assert.ok(backend.result.success);assert.equal(backend.before,backend.after);
   await page.locator('#btn-player-back').click({force:true});
   await until(()=>window.app._currentView()==='composer'&&window.app.composer.visible);
+  await page.locator('.fc-library-filters').evaluate(el=>el.open=true);
   await page.locator('[data-field=drafts]').check({force:true});
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
   assert.equal(await page.evaluate(()=>window.app.composer.session.include_drafts),true,'explicit choice carries into a new song');
@@ -245,7 +251,7 @@ try{
   await until(()=>window.app.composer.session.placements.length===6&&window.app.composer.session.placements.every(p=>p.clip_id==='synthetic-draft'));
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===1&&!window.app.composer.dirty);
   const draftSessionId=await page.evaluate(()=>window.app.composer.session.id),draftPlacements=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.warnings.some(w=>w.includes('unreviewed draft'))));
   await page.locator('[data-field=drafts]').uncheck({force:true});
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null);
@@ -257,7 +263,7 @@ try{
   await page.locator('.fc-placement-strip button[data-placement]').first().click({force:true});
   assert.equal(await page.locator('[data-field=clip_id] option:checked').getAttribute('disabled'),'');
   assert.equal(await page.locator('[data-field=clip_id] option:not(:disabled)').count(),0);
-  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('draft scripts are disabled'));
+  await page.locator('[data-action=prepare]').dispatchEvent('click');await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('draft scripts are disabled'));
   await page.locator('[data-action=undo]').click({force:true});assert.equal(await page.locator('[data-field=drafts]').isChecked(),true);
   await page.locator('[data-action=redo]').click({force:true});assert.equal(await page.locator('[data-field=drafts]').isChecked(),false);
   await page.locator('[data-field=saved]').selectOption(draftSessionId);await until(()=>window.app.composer.session.include_drafts&&!window.app.composer.dirty);
@@ -276,6 +282,10 @@ try{
   assert.ok(await page.evaluate(()=>!window.app.composer.prepared&&!window.app.composer.devices.active),'excluded drafts do not prevent song-only listening');
   await page.locator('[data-action=stop]').click({force:true});
   console.log('PASS: draft opt-in, independent stars, assembly, manual choices, preview rejection, saved choice, undo/redo, and late preparation invalidation.');
+  await checkLargeLibrary(page);
+  await page.evaluate(()=>document.getElementById('composer-container').scrollTop=0);
+  const libraryBounds=await page.locator('.fc-library').boundingBox();
+  await page.screenshot({path:path.join(checkout,'docs','composer-library.png'),clip:libraryBounds});
   assert.deepEqual(errors,[]);
   console.log('PASS: actual Electron launch, song analysis, assembly, clip switching, pause/seek, recipe save, song motion, FFmpeg export, and six-axis FunSync playback handoff.');
 }catch(error){console.error(error.message);if(app){for(const page of app.windows())if(page.url().includes('index.html')){console.error(await page.evaluate(()=>({ready:document.readyState,nav:!!window.app?.navBar,navElement:!!window.app?.navBar?._el,status:document.querySelector('[data-status]')?.textContent,view:window.app?._currentView(),body:document.body.innerText.slice(0,1500)})));await page.screenshot({path:path.join(root,'failure.png')}).catch(()=>{});}}throw error;}

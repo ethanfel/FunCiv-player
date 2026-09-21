@@ -76,18 +76,30 @@ export function slipSource(session,id,sourceIn,clips){
 
 const clipGaps=(section,start,end)=>(section.gaps||[]).map(([a,b])=>[Math.max(a,start),Math.min(b,end)]).filter(([a,b])=>b>a);
 function cutPlacement(p,at){return [{...p,end_ms:at},{...p,id:crypto.randomUUID(),start_ms:at,source_in_ms:p.clip_id?p.source_in_ms+(at-p.start_ms)*p.rate:0}];}
+const defaultSectionName=label=>/^Section \d+(?: B)*$/.test(label);
+export function normalizeSectionNames(session){
+  const next=structuredClone(session);
+  next.sections.forEach((section,index)=>{if(section.auto_label!==false&&defaultSectionName(section.label))section.label=`Section ${index+1}`;});
+  return next;
+}
+function splitName(sections,{label,auto_label}){
+  if(auto_label!==false&&defaultSectionName(label))return label;
+  const base=String(label).replace(/ \(\d+\)$/,'');let number=2;
+  while(sections.some(s=>s.label===`${base} (${number})`))number++;
+  return `${base} (${number})`;
+}
 
 export function splitSongSection(session,at){
   const next=structuredClone(session),index=next.sections.findIndex(s=>at>s.start_ms&&at<s.end_ms),before=next.sections[index];
   if(!before||!Number.isInteger(at)||at-before.start_ms<MIN_REGION_MS||before.end_ms-at<MIN_REGION_MS)throw new Error('Split at least 100 ms inside a section.');
   if(before.locked)throw new Error('Unlock the section before splitting it.');
-  const existing=sectionRegions(next,before),after={...structuredClone(before),id:crypto.randomUUID(),label:before.label+' B',start_ms:at};
+  const existing=sectionRegions(next,before),after={...structuredClone(before),id:crypto.randomUUID(),label:splitName(next.sections,before),start_ms:at};
   after.gaps=clipGaps(before,at,before.end_ms);before.gaps=clipGaps(before,before.start_ms,at);before.end_ms=at;
   before.planned_regions=after.planned_regions=!!existing.length;
   next.sections.splice(index+1,0,after);
   next.placements=next.placements.flatMap(p=>p.section_id===before.id&&p.start_ms<at&&p.end_ms>at?cutPlacement(p,at):[p]);
   for(const p of next.placements)if(p.section_id===before.id&&p.start_ms>=at)p.section_id=after.id;
-  delete next.asset_bindings;return next;
+  delete next.asset_bindings;return normalizeSectionNames(next);
 }
 
 export function mergeSongSections(session,index){
@@ -103,7 +115,7 @@ export function mergeSongSections(session,index){
   const ac=sectionCategories(before),bc=sectionCategories(after);before.categories=ac.length&&bc.length?[...new Set([...ac,...bc])]:[];delete before.category;
   before.end_ms=after.end_ms;before.gaps=[...(before.gaps||[]),...(after.gaps||[])];
   for(const p of next.placements)if(p.section_id===after.id)p.section_id=before.id;
-  next.placements.sort((a,b)=>a.start_ms-b.start_ms);next.sections.splice(index+1,1);delete next.asset_bindings;return next;
+  next.placements.sort((a,b)=>a.start_ms-b.start_ms);next.sections.splice(index+1,1);delete next.asset_bindings;return normalizeSectionNames(next);
 }
 
 export function resizeSongSection(session,sectionId,at,clips){

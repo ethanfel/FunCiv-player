@@ -4,7 +4,7 @@ import { generateBeatSection } from '../../vendor/motion-studio/audio-patterns.m
 import { DEFAULT_OUTPUT, outputSettings } from './output.mjs';
 export { DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings } from './output.mjs';
 import { sectionCategories, matchesSection, sectionRegions, validateRegionCoverage } from './regions.mjs';
-export { sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, splitSongSection, mergeSongSections, resizeSongSection } from './regions.mjs';
+export { sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from './regions.mjs';
 export { audioChangeMarkers, snapToAudio, suggestRegionCuts } from './audio-cuts.mjs';
 
 export const SCHEMA = 'funciv-session/1';

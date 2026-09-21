@@ -2,7 +2,7 @@ import { clone, validateSession, sectionCategories, matchesSection, sectionRegio
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=ms=>(ms/1000).toFixed(3);
-export const REGION_TOOLS=`<div class="fc-region-tools"><strong>Clip regions</strong><button data-action="mark-in">Mark in</button><button data-action="mark-out">Mark out</button><button data-action="split-region">Cut at playhead</button><button data-action="merge-region">Merge next region</button><label class="fc-check"><input data-field="snap-audio" type="checkbox" checked> Snap to audio</label><label>Zoom<select data-field="timeline-zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label></div>
+export const REGION_TOOLS=`<div class="fc-region-tools"><strong>Clip regions</strong><button data-action="mark-in">Mark in</button><button data-action="mark-out">Mark out</button><button data-action="split-region" title="Split a video region inside its existing song section">Split clip at playhead</button><button data-action="merge-region">Merge next clip</button><label class="fc-check"><input data-field="snap-audio" type="checkbox" checked> Snap to audio</label></div>
 <div class="fc-region-tools"><label>Suggested spacing<select data-field="region-beats"><option value="2">2 beats</option><option value="4" selected>4 beats</option><option value="8">8 beats</option><option value="16">16 beats</option></select></label><button data-action="suggest-regions">Suggest audio cuts</button><button data-action="apply-regions" disabled>Apply suggested cuts</button><button data-action="auto-regions">Auto clip lengths</button><small data-region-hint>Sections set category pools. Regions set clip timing.</small></div>`;
 
 export class RegionEditor {
@@ -52,15 +52,13 @@ export class RegionEditor {
   }
   change(input){
     const field=input.dataset.field,v=this.view;
-    if(field==='timeline-zoom'){this.root.querySelector('.fc-timeline').style.width=`${Number(input.value)*100}%`;v.draw();return true;}
-    if(['snap-audio','region-beats'].includes(field))return true;
+    if(field==='timeline-zoom'){v.timeline.setZoom(Number(input.value));return true;}
+    if(field==='zoom-slider'){v.timeline.setZoom(2**Number(input.value));return true;}
+    if(['snap-audio','region-beats','follow-playhead'].includes(field))return true;
     if(field==='section-category'||field==='section-all'){
-      const next=clone(v.session),section=next.sections[v.selected],pool=new Set(sectionCategories(section));
+      const section=v.session.sections[v.selected],pool=new Set(sectionCategories(section));
       if(field==='section-all')pool.clear();else if(input.checked)pool.add(input.dataset.category);else pool.delete(input.dataset.category);
-      section.categories=[...pool];delete section.category;section.locked=false;
-      if(section.planned_regions){for(const p of sectionRegions(next,section)){const clip=v.catalog.clips.find(c=>c.id===p.clip_id);if(!clip||!matchesSection(clip,section)){p.clip_id=null;p.source_in_ms=0;p.rate=1;p.locked=false;}}}
-      else next.placements=next.placements.filter(p=>p.section_id!==section.id);
-      delete next.asset_bindings;this.commit(next);return true;
+      this.setCategories(section.id,[...pool]);return true;
     }
     if(['region-start','region-end'].includes(field)){this.commit(moveRegionEdge(v.session,v.selectedPlacement,field==='region-start'?'start':'end',Number(input.value)*1000,v.catalog.clips));return true;}
     if(field==='source_in_ms'||field==='source-offset'){this.commit(slipSource(v.session,v.selectedPlacement,Number(input.value)*(field==='source_in_ms'?1000:1),v.catalog.clips));return true;}
@@ -73,10 +71,38 @@ export class RegionEditor {
     }
     return false;
   }
+  setCategories(id,categories){
+    const v=this.view,next=clone(v.session),section=next.sections.find(s=>s.id===id);if(!section)throw new Error('Select a song section first.');
+    section.categories=categories;delete section.category;section.locked=false;
+    const regions=sectionRegions(next,section);if(regions.length)section.planned_regions=true;
+    for(const p of regions){const clip=v.catalog.clips.find(c=>c.id===p.clip_id);if(!clip||!matchesSection(clip,section)){p.clip_id=null;p.source_in_ms=0;p.rate=1;p.locked=false;}}
+    delete next.asset_bindings;this.commit(next);
+  }
+  folders(id){
+    const v=this.view,session=v.session,section=session?.sections.find(s=>s.id===id);if(!section)throw new Error('Load a song and select a section.');
+    v.selectSection(session.sections.indexOf(section));
+    const selected=new Set(sectionCategories(section)),categories=[...new Set(v.catalog.clips.flatMap(c=>c.categories||[]).concat([...selected]))].sort();
+    const dialog=document.createElement('dialog');dialog.className='fc-dialog fc-folder-dialog';
+    dialog.innerHTML=`<form method="dialog"><h2>Folders for ${esc(section.label)}</h2><p>This is a full song section. Its clips may come from any category you check.</p><label class="fc-check"><input name="any" type="checkbox" ${selected.size?'':'checked'}> Any folder / category</label><div class="fc-folder-choices">${categories.map(category=>{
+      const pool=v.catalog.clips.filter(c=>c.categories?.includes(category)),eligible=pool.filter(c=>c.available&&allowsClipReview(session,c)&&clipRating(c)>=v.minimumRating()&&(['song','hold'].includes(section.motion)||c.script_ready));
+      return `<label class="fc-check"><input name="category" value="${esc(category)}" type="checkbox" ${selected.has(category)?'checked':''}><span>${esc(category)}<small>${eligible.length} eligible · ${pool.length} catalog clips</small></span></label>`;
+    }).join('')||'<p>Add a local folder or sync the dataset to get categories.</p>'}</div><p>Folder scans create categories. HF clips start as Uncategorized; select a library clip to change its category. Ratings, draft settings and available scripts still apply.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="apply" class="fc-primary">Apply folders</button></div></form>`;
+    dialog.addEventListener('change',event=>{
+      if(event.target.name==='any'&&event.target.checked)dialog.querySelectorAll('[name=category]').forEach(c=>{c.checked=false;});
+      if(event.target.name==='category')dialog.querySelector('[name=any]').checked=![...dialog.querySelectorAll('[name=category]')].some(c=>c.checked);
+    });
+    dialog.addEventListener('close',()=>{
+      const choice=[...dialog.querySelectorAll('[name=category]:checked')].map(c=>c.value);dialog.remove();
+      if(dialog.returnValue!=='apply')return;
+      try{if(v.session!==session)throw new Error('The session changed. Open its folder choices again.');this.setCategories(id,choice);v.message('Folder choices applied. Compatible clips and trims are kept; assemble to fill empty regions.');}catch(e){v.message(e.message,true);}
+    });
+    this.root.append(dialog);dialog.showModal();
+  }
   renderTrack(){
     const v=this.view,s=v.session;if(!s)return;
     const clips=new Map(v.catalog.clips.map(c=>[c.id,c])),duration=s.song.duration_ms;
-    this.root.querySelector('.fc-placement-strip').innerHTML=s.placements.map(p=>{
+    const empty=s.sections.filter(section=>!sectionRegions(s,section).length).map(section=>`<button class="fc-unassembled" data-action="section-folders" data-id="${esc(section.id)}" style="left:${section.start_ms/duration*100}%;width:${(section.end_ms-section.start_ms)/duration*100}%" title="Choose folders for ${esc(section.label)}, then Assemble">No clips · choose folders</button>`).join('');
+    this.root.querySelector('.fc-placement-strip').innerHTML=empty+s.placements.map(p=>{
       const regions=sectionRegions(s,s.sections.find(s=>s.id===p.section_id)),index=regions.indexOf(p),title=`${clips.get(p.clip_id)?.name||'Empty region'} · ${time(p.start_ms)}–${time(p.end_ms)} s`;
       return `<div class="fc-region ${p.id===v.selectedPlacement?'fc-selected':''} ${p.clip_id?'':'fc-region-empty'}" style="width:${(p.end_ms-p.start_ms)/duration*100}%;left:${p.start_ms/duration*100}%"><button data-placement="${esc(p.id)}" title="${esc(title)}">${esc(clips.get(p.clip_id)?.name||'Choose clip')}${p.locked?' · kept':''}</button><button class="fc-region-handle fc-region-start" data-region-edge="start" data-region-id="${esc(p.id)}" aria-label="Move region start at ${time(p.start_ms)} seconds" ${index===0?'disabled':''}></button><button class="fc-region-handle fc-region-end" data-region-edge="end" data-region-id="${esc(p.id)}" aria-label="Move region end at ${time(p.end_ms)} seconds" ${index===regions.length-1?'disabled':''}></button></div>`;
     }).join('');
