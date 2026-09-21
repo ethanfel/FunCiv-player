@@ -1,4 +1,4 @@
-import { clone, validateSession, sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, suggestRegionCuts, snapToAudio, clipRating, sourceTime } from '../../packages/composer-core/index.mjs';
+import { clone, validateSession, sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, suggestRegionCuts, snapToAudio, clipRating, allowsClipReview, sourceTime } from '../../packages/composer-core/index.mjs';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=ms=>(ms/1000).toFixed(3);
@@ -88,7 +88,7 @@ export class RegionEditor {
     const v=this.view,s=v.session,p=this.selected();if(!p)return '<p>Select a clip region to edit its timing and source portion.</p>';
     const section=s.sections.find(s=>s.id===p.section_id),regions=sectionRegions(s,section),index=regions.indexOf(p),clip=v.catalog.clips.find(c=>c.id===p.clip_id);
     const required=(p.end_ms-p.start_ms)*p.rate;
-    const choices=v.catalog.clips.filter(c=>c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&(v.includeDrafts||c.review_status!=='draft')&&c.duration_ms>=required&&(['song','hold'].includes(section.motion)||c.script_ready));
+    const choices=v.catalog.clips.filter(c=>c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&allowsClipReview(v.session,c)&&c.duration_ms>=required&&(['song','hold'].includes(section.motion)||c.script_ready));
     const current=p.clip_id&&!choices.some(c=>c.id===p.clip_id)?`<option value="${esc(p.clip_id)}" selected disabled>Current: ${esc(clip?.name||'Missing clip')} (outside filters)</option>`:'';
     const max=clip?Math.max(0,clip.duration_ms-required):0;
     return `<h3>Selected clip region</h3><label>Song start (seconds)<input data-field="region-start" type="number" step="0.001" value="${time(p.start_ms)}" ${index===0?'disabled':''}></label><label>Song end (seconds)<input data-field="region-end" type="number" step="0.001" value="${time(p.end_ms)}" ${index===regions.length-1?'disabled':''}></label><small>Drag a region edge to move the shared cut. Neighbors stay joined.</small>

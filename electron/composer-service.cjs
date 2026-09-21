@@ -133,14 +133,17 @@ class ComposerService {
       const id=`hf-${row.civitai_id}-${row.variant_id.slice(0,20)}`,existing=this.catalog.clips.find(c=>c.id===id);
       const local=this.catalog.clips.find(c=>c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
       incoming.push({...existing,id,name:`Civitai ${row.civitai_id}`,civitai_id:row.civitai_id,variant_id:row.variant_id,
-        duration_ms:row.duration_ms,categories:existing?.categories||local?.categories||['Uncategorized'],review_status:row.review_status,quality:row.quality,
+        duration_ms:row.duration_ms,categories:existing?.categories||local?.categories||['Uncategorized'],review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
         preferred:row.preferred,origin:'dataset',commit:info.sha,remote_scripts:row.scripts,
         // An earlier prepared binding remains tied to its revision; fetching a new catalog doesn't replace saved sessions.
         scripts:existing?.commit===info.sha?existing.scripts:undefined,path:existing?.path||local?.path,url:existing?.url||local?.url,
         available:!!(existing?.path||local?.path),binding:'duration-compatible'});
     }
     this.catalog.clips=this.catalog.clips.filter(c=>c.origin!=='dataset').concat(incoming);
-    this.catalog.dataset={repo:REPO,commit:info.sha,count:incoming.length,updated_at:new Date().toISOString()};
+    this.catalog.dataset={repo:REPO,commit:info.sha,count:incoming.length,
+      review_policy:['all-drafts','folder-approval'].includes(manifest.review_policy)?manifest.review_policy:null,
+      review_counts:{draft:incoming.filter(c=>c.review_status==='draft').length,approved:incoming.filter(c=>c.review_status==='approved').length},
+      updated_at:new Date().toISOString()};
     await this.saveCatalog();update(1,'Dataset catalog verified');return this.catalog.dataset;
   }
   async downloadMedia(url,dest,signal){

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSession, arrange, compile, validateSession, clipRating, remapActions, sourceTime, songTime, History } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, compile, validateSession, clipRating, remapActions, sourceTime, songTime, History, planRegions } from '../../packages/composer-core/index.mjs';
 
 const script={actions:[{at:0,pos:0},{at:500,pos:100},{at:1000,pos:0}]};
 const clips=['a','b','c'].map(id=>({id,name:id,duration_ms:1000,available:true,categories:['A'],scripts:{L0:script,R0:script}}));
@@ -86,4 +86,42 @@ test('locked clips and existing placements cannot bypass the minimum at compilat
   s.sections[0].locked=false;const fixed=arrange(s,rated);assert.doesNotThrow(()=>compile(fixed,rated));
   fixed.placements[0].clip_id='a';assert.throws(()=>compile(fixed,rated),/below the 5★ minimum/);
   fixed.sections[0].motion='hold';assert.throws(()=>compile(fixed,rated),/below the 5★ minimum/,'all motion policies honor rating');
+});
+
+test('HF drafts require explicit opt-in, independently of stars; legacy sessions exclude drafts',()=>{
+  const catalog=clips.map((c,i)=>({...c,origin:'dataset',review_status:'draft',quality:[5,0,4][i]}));
+  const s=createSession(song,1);assert.equal(s.include_drafts,false);s.min_rating=4;
+  assert.throws(()=>arrange(s,catalog),/No usable clips/);
+  s.include_drafts=true;
+  assert.deepEqual(new Set(arrange(s,catalog).placements.map(p=>p.clip_id)),new Set(['a','c']));
+  s.min_rating=5;const assembled=arrange(s,catalog);
+  assert.ok(assembled.placements.every(p=>p.clip_id==='a'));
+  assert.deepEqual(compile(assembled,catalog).warnings,['a: unreviewed draft script']);
+  delete assembled.include_drafts;
+  assert.throws(()=>compile(assembled,catalog),/draft scripts are disabled/);
+  delete s.include_drafts;s.min_rating=0;
+  assert.throws(()=>arrange(s,catalog),/No usable clips/);
+  assert.doesNotThrow(()=>arrange(s,clips),'local scripts remain eligible');
+  assert.doesNotThrow(()=>arrange(s,catalog.map(c=>({...c,review_status:'approved'}))));
+  assert.throws(()=>arrange(s,catalog.map(c=>({...c,review_status:undefined}))),/No usable clips/,'missing remote review labels do not imply approval');
+  for(const include_drafts of [null,'true','false',0,1,[]])assert.throws(()=>validateSession({...s,include_drafts}),/Include draft scripts must/);
+});
+
+test('disabling drafts preserves editable regions but blocks kept clips and every compilation policy',()=>{
+  const catalog=[{...clips[0],review_status:'draft',quality:5},{...clips[1],review_status:'approved',quality:5}];
+  const s=createSession(song,1);s.include_drafts=true;
+  const planned=arrange(planRegions(s,s.sections[0].id,[1000,2000,3000,4000,5000]),catalog.slice(0,1));
+  planned.include_drafts=false;
+  assert.doesNotThrow(()=>validateSession(planned));
+  for(const motion of ['clip','gaps','song','hold']){
+    planned.sections[0].motion=motion;
+    assert.throws(()=>compile(planned,catalog),/draft scripts are disabled/);
+  }
+  planned.sections[0].locked=true;
+  assert.throws(()=>arrange(planned,catalog),/draft scripts are disabled/);
+  planned.sections[0].locked=false;planned.placements[0].locked=true;
+  assert.throws(()=>arrange(planned,catalog),/kept clip no longer matches/);
+  planned.placements[0].locked=false;const fixed=arrange(planned,catalog);
+  assert.deepEqual(fixed.placements.map(p=>[p.start_ms,p.end_ms]),planned.placements.map(p=>[p.start_ms,p.end_ms]));
+  assert.ok(fixed.placements.every(p=>p.clip_id==='b'));assert.doesNotThrow(()=>compile(fixed,catalog));
 });

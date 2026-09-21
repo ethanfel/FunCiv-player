@@ -11,8 +11,10 @@
 .fc-clip-rating small{font-size:10px!important}
 .fc-clip-availability{font-size:10px;color:var(--fc-muted);margin:6px 0}
 .fc-clip-availability.fc-ready{color:#91d4b5}
-.fc-rating-warning{font-size:11px;line-height:1.5;color:#f4c399;background:#392a23;border-radius:5px;padding:8px;margin:8px 0}
-.fc-rating-warning[hidden]{display:none}
+.fc-rating-warning,.fc-draft-warning{font-size:11px;line-height:1.5;color:#f4c399;background:#392a23;border-radius:5px;padding:8px;margin:8px 0}
+.fc-rating-warning[hidden],.fc-draft-warning[hidden]{display:none}
+.fc-dataset-review{display:block;line-height:1.5;margin-top:8px}
+.fc-dataset-review[hidden]{display:none}
 .fc-library-count{line-height:1.6}
 .fc-output-settings{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:0 0 12px}
 .fc-output-settings label{display:flex;flex-direction:column;gap:5px;color:var(--fc-muted);font-size:11px}

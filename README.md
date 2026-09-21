@@ -80,7 +80,11 @@ Use **API settings** to choose `civitai.com`, `civitai.red`, or `civitaired.com`
 
 Click **Resolve video + scripts** on a variant to fetch its verified axes. An indexed local video with a matching Civitai ID is reused when its duration is compatible. Otherwise the selected video is fetched through Civitai's API into FunCiv's cache. Compatibility is checked by duration; this is not proof that two videos contain identical frames. API account, site, or regional restrictions can make a clip unavailable.
 
-Draft scripts are excluded until **Include draft scripts** is enabled. Categories are local editorial tags; the dataset currently does not provide a category taxonomy. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
+To use unchecked HF scripts, enable **Composer → Clip library → Include draft scripts (unreviewed)**, then click **Resolve video + scripts** on the variants you want. The choice is saved with each session and supports undo/redo. Drafts are excluded by default, including in older recipes without this setting. Assembly, manual replacement, preview, device preparation and export honor the choice. Turning it off keeps existing regions editable, pauses playback and requires excluded drafts to be replaced or explicitly allowed again. **Used in session** keeps affected clips visible.
+
+Sam3D now publishes all variants as drafts by default (`review_policy: "all-drafts"`), even when they have a quality rating or were locally saved with “Approve & save”. The library shows how many drafts are present and explains when the dataset uses this policy. **Stars and review status are independent:** selecting drafts plus **4★ or higher** still excludes unrated scripts. Choose **All ratings (including unrated)** to browse those too. Resolving a variant verifies its files but does not mark it reviewed.
+
+Categories are local editorial tags; the dataset currently does not provide a category taxonomy. Refreshing the catalog does not silently substitute a changed asset in a saved recipe.
 
 ## Playback, devices, and temporary video
 

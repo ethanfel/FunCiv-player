@@ -1,4 +1,4 @@
-import { createSession, arrange, validateSession, clipRating, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, validateSession, clipRating, isDraftClip, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings, sectionCategories, splitSongSection, mergeSongSections, resizeSongSection } from '../../packages/composer-core/index.mjs';
 import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
 import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { CompositionPlayer } from './composition-player.js';
@@ -15,7 +15,7 @@ const ready=clip=>clip.available&&clip.script_ready;
 export class ComposerView {
   constructor(app,root){
     this.app=app;this.root=root;this.history=new History();this.catalog={clips:[],songs:[]};this.saved=[];this.revisions=new Map();
-    this.devices=new ComposerDeviceSession(app);this.analysisGeneration=0;this.preparationGeneration=0;this.selected=0;this.dirty=false;this.defaultMinRating=0;
+    this.devices=new ComposerDeviceSession(app);this.analysisGeneration=0;this.preparationGeneration=0;this.selected=0;this.dirty=false;this.defaultMinRating=0;this.defaultIncludeDrafts=false;
     this.root.innerHTML=`
       <header class="fc-header"><div><span class="fc-eyebrow">FUNCIV / COMPOSER</span><h1>Make a session from a song.</h1></div>
         <div class="fc-actions"><select data-field="saved" aria-label="Saved sessions"><option value="">Open session…</option></select><button data-action="save">Save session</button><button data-action="import" class="fc-primary">＋ Load song</button></div></header>
@@ -28,7 +28,10 @@ export class ComposerView {
           <label>Minimum rating for session<select data-field="min_rating">${options([[0,'All ratings (including unrated)'],[1,'1★ or higher'],[2,'2★ or higher'],[3,'3★ or higher'],[4,'4★ or higher'],[5,'5★ only']].map(([n,label])=>[String(n),label]),'0')}</select></label>
           <small>Applies to assembly, preview and export.</small>
           <label>Sort clips<select data-field="library-sort"><option value="rating">Rating: highest first</option><option value="name">Name: A–Z</option></select></label>
-          <label class="fc-check"><input data-field="drafts" type="checkbox"> Include draft scripts</label>
+          <label class="fc-check"><input data-field="drafts" type="checkbox" aria-describedby="fc-draft-help"> Include draft scripts (unreviewed)</label>
+          <small id="fc-draft-help">Saved with this session. Star ratings do not mean a script has been reviewed.</small>
+          <small class="fc-dataset-review" role="status" hidden></small>
+          <div class="fc-draft-warning" role="status" hidden></div>
           <div class="fc-rating-warning" role="status" hidden></div>
           <div class="fc-library-count"></div><div class="fc-clips"></div>
         </aside>
@@ -70,7 +73,7 @@ export class ComposerView {
   hide(){this.visible=false;this.regionEditor.finishDrag(true);this.regionEditor.pauseSource();this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
   message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
   async refresh(){
-    this.catalog=await this.ipc('state');if(this.ratingConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
+    this.catalog=await this.ipc('state');if(this.ratingConflicts().length||this.draftConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
     this.root.querySelector('[data-field=saved]').innerHTML='<option value="">Open session…</option>'+options(this.saved.map(s=>[s.id,s.name]),'');
     this.root.querySelector('[data-field=song]').innerHTML='<option value="">Recent songs…</option>'+options(this.catalog.songs.map(s=>[s.id,s.name]),'');
     this.renderLibrary();
@@ -95,7 +98,7 @@ export class ComposerView {
     validateSession(next);this.history.record(this.session);this.invalidate();this.session=next;this.dirty=true;this.renderEditor();
   }
   newSong(song){
-    this.analysisGeneration++;this.invalidate();const minimum=this.minimumRating();this.session=createSession(song);this.session.min_rating=minimum;this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.renderEditor();this.message('Song ready. Analyze it, choose categories, then assemble.');
+    this.analysisGeneration++;this.invalidate();const minimum=this.minimumRating(),drafts=this.includeDrafts;this.session=createSession(song);this.session.min_rating=minimum;this.session.include_drafts=drafts;this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.renderEditor();this.message('Song ready. Analyze it, choose categories, then assemble.');
   }
   discardOkay(){return !this.dirty||window.confirm('Leave this session without saving your changes?');}
   async action(action,button){
@@ -117,8 +120,7 @@ export class ComposerView {
     if(action==='merge'){this.regionEditor.commit(mergeSongSections(this.session,this.selected));return;}
     if(action==='assemble'||action==='variation'){
       const next=clone(this.session);if(action==='variation')next.seed++;
-      const pool=this.catalog.clips.filter(c=>this.includeDrafts||c.review_status!=='draft');
-      const assembled=arrange(next,pool);this.history.record(this.session);this.invalidate();this.session=assembled;this.dirty=true;this.renderEditor();
+      const assembled=arrange(next,this.catalog.clips);this.history.record(this.session);this.invalidate();this.session=assembled;this.dirty=true;this.renderEditor();
       this.message(`${assembled.placements.length} clips arranged. Locked sections retained.`);return;
     }
     if(action==='prepare'){await this.prepare();return;}
@@ -157,7 +159,11 @@ export class ComposerView {
   async change(input){
     const field=input.dataset.field;if(!field)return;
     if(this.regionEditor.change(input))return;
-    if(field==='drafts'){this.includeDrafts=input.checked;this.renderLibrary();this.renderInspector();return;}
+    if(field==='drafts'){
+      if(this.session)this.edit(s=>{s.include_drafts=input.checked;},{keepPlacements:true});
+      else{this.defaultIncludeDrafts=input.checked;this.renderLibrary();this.renderInspector();}
+      this.message(this.includeDrafts?'Unreviewed drafts are allowed. The minimum star rating still applies.':'Draft scripts are excluded. Reassemble or replace any drafts already used.');return;
+    }
     if(field==='library-view'||field==='library-sort'){this.renderLibrary();return;}
     if(field==='min_rating'){
       const minimum=Number(input.value);
@@ -216,6 +222,12 @@ export class ComposerView {
     }finally{this.preparing=false;}
   }
   minimumRating(){return this.session ? this.session.min_rating??0 : this.defaultMinRating;}
+  get includeDrafts(){return this.session ? this.session.include_drafts===true : this.defaultIncludeDrafts;}
+  draftConflicts(){
+    if(this.includeDrafts)return [];
+    const drafts=new Set(this.catalog.clips.filter(isDraftClip).map(c=>c.id));
+    return [...new Set((this.session?.placements||[]).filter(p=>drafts.has(p.clip_id)).map(p=>p.clip_id))];
+  }
   ratingConflicts(){
     const clips=new Map(this.catalog.clips.map(c=>[c.id,c]));
     return [...new Set((this.session?.placements||[]).filter(p=>p.clip_id&&clipRating(clips.get(p.clip_id))<this.minimumRating()).map(p=>p.clip_id))];
@@ -224,9 +236,15 @@ export class ComposerView {
     const search=this.root.querySelector('[data-field=search]').value.toLowerCase();
     const view=this.root.querySelector('[data-field=library-view]').value,sort=this.root.querySelector('[data-field=library-sort]').value,minimum=this.minimumRating();
     this.root.querySelector('[data-field=min_rating]').value=String(minimum);
+    this.root.querySelector('[data-field=drafts]').checked=this.includeDrafts;
+    const draftCount=this.catalog.clips.filter(isDraftClip).length,review=this.root.querySelector('.fc-dataset-review');
+    review.hidden=!draftCount;
+    review.textContent=`${this.catalog.dataset?.review_policy==='all-drafts'?'This dataset publishes all variants as unreviewed drafts. ':''}${draftCount} draft variant${draftCount===1?'':'s'} ${this.includeDrafts?'included before rating and availability filters.':'hidden from browsing and assembly. Enable Include draft scripts to use them.'}`;
+    const draftConflicts=this.draftConflicts(),draftWarning=this.root.querySelector('.fc-draft-warning');draftWarning.hidden=!draftConflicts.length;
+    draftWarning.textContent=`${draftConflicts.length} used draft clip${draftConflicts.length===1?' is':'s are'} excluded. Enable Include draft scripts, or unlock and replace them before preview or export. “Used in session” keeps them visible.`;
     const used=new Map();for(const p of this.session?.placements||[])if(p.clip_id)used.set(p.clip_id,(used.get(p.clip_id)||0)+1);
     const clips=this.catalog.clips.filter(c=>
-      (view==='used'?used.has(c.id):(this.includeDrafts||c.review_status!=='draft')&&clipRating(c)>=minimum)&&
+      (view==='used'?used.has(c.id):(this.includeDrafts||!isDraftClip(c))&&clipRating(c)>=minimum)&&
       (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&`${c.name} ${(c.categories||[]).join(' ')}`.toLowerCase().includes(search))
       .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
     const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;
@@ -238,11 +256,12 @@ export class ComposerView {
       return `<article class="fc-clip" data-clip-id="${esc(c.id)}" data-rating="${rating}"><div class="fc-clip-top"><strong title="${esc(c.name)}">${esc(c.name)}</strong><span>${stamp(c.duration_ms)}</span></div>
         <div class="fc-clip-rating" aria-label="${rating?`${rating} out of 5 stars`:'Unrated'}">${rating?'★'.repeat(rating)+'☆'.repeat(5-rating):'Unrated'}<small>${override?'Your rating':c.origin==='dataset'?'Dataset rating':'No rating yet'}</small></div>
         <div class="fc-clip-availability ${ready(c)?'fc-ready':''}">${status}</div>
-        <small>${esc(c.review_status)}${c.script_ready?' · '+esc((c.axes||[]).join(' / ')):''}${used.has(c.id)?` · Used ${used.get(c.id)}×`:''}</small>
+        <small>${isDraftClip(c)?'Draft · unreviewed':esc(c.review_status)}${c.script_ready?' · '+esc((c.axes||[]).join(' / ')):''}${used.has(c.id)?` · Used ${used.get(c.id)}×`:''}</small>
+        ${!this.includeDrafts&&isDraftClip(c)?'<div class="fc-draft-warning">Draft scripts are disabled for this session</div>':''}
         ${rating<minimum?'<div class="fc-rating-warning">Below session minimum</div>':''}
         <label>Rate this clip<select data-field="rating" data-id="${esc(c.id)}" aria-label="Rating for ${esc(c.name)}">${options([['',c.origin==='dataset'?`Use dataset rating (${ratingLabel(clipRating({quality:c.quality}))})`:'No local rating'],...Array.from({length:6},(_,n)=>[String(n),ratingLabel(n)])],override?String(c.user_rating):'')}</select></label>
         <label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${ready(c)?'Verify / refresh':'Resolve video + scripts'}</button>`:''}</article>`;
-    }).join('')||`<p class="fc-empty">${!this.catalog.clips.length?'Add your downloaded clip folder, or sync the dataset to browse script variants.':view==='used'?'No used clips match. Assemble a session or clear the search.':'No clips match. Lower the minimum rating, change the view, or clear the search.'}</p>`;
+    }).join('')||`<p class="fc-empty">${!this.catalog.clips.length?'Add your downloaded clip folder, or sync the dataset to browse script variants.':view==='used'?'No used clips match. Assemble a session or clear the search.':draftCount&&!this.includeDrafts?'No clips match. Enable Include draft scripts to browse unreviewed variants, or adjust the rating and view filters.':'No clips match. Lower the minimum rating, change the view, or clear the search.'}</p>`;
   }
   renderOutput(){
     const output=outputSettings(this.session||{output:DEFAULT_OUTPUT});

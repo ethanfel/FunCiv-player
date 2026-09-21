@@ -120,6 +120,54 @@ test('local rating overrides survive dataset refresh and restart; reset restores
   await assert.rejects(()=>reopened.rate('missing',5),/Clip not found/);
 });
 
+test('HF all-drafts catalog resolves checked scripts against a local video and persists explicit use',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-drafts-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const commit='a'.repeat(40),key=hash('civitai:123'),variant='b'.repeat(64),signal=new AbortController().signal,calls=[];
+  const script=JSON.stringify({actions:[{at:0,pos:10},{at:500,pos:90},{at:1000,pos:10}]}),scriptPath=`scripts/${key.slice(0,2)}/${key}/${variant}.funscript`;
+  let review_policy='all-drafts',review_status='draft',corrupt=false;
+  const service=await new ComposerService(path.join(root,'data'),{fetchImpl:async url=>{
+    calls.push(url);
+    const content=JSON.stringify({civitai_id:'123',variant_id:variant,duration_ms:1000,quality:5,review_status,scripts:{L0:{path:scriptPath,sha256:hash(script)}}})+'\n';
+    if(url.includes('/api/datasets/'))return new Response(JSON.stringify({sha:commit}));
+    if(url.endsWith('manifest.json'))return new Response(JSON.stringify({schema:'s3f-public-funscripts/1',review_policy,files:{'data/catalog.jsonl':hash(content)}}));
+    if(url.endsWith('data/catalog.jsonl'))return new Response(content);
+    assert.equal(url,`https://huggingface.co/datasets/ethanfel/FunCiv-Data/raw/${commit}/${scriptPath}`);
+    return new Response(corrupt?'{}':script);
+  }}).init();
+  const library=path.join(root,'clips');await fs.mkdir(library);
+  const video=path.join(library,'fixture_civitai_123_test.mp4');
+  await service.run('ffmpeg',['-v','error','-f','lavfi','-i','color=c=teal:s=160x90:r=30:d=1','-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',video],signal);
+  await service.run('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=220:duration=1',path.join(root,'song.wav')],signal);
+  await service.scan(library,signal);const song=await service.importSong(path.join(root,'song.wav'),signal);
+  await service.refreshDataset();const draft=service.state().clips.find(c=>c.origin==='dataset');
+  assert.equal(draft.path,video);assert.equal(draft.review_status,'draft');assert.equal(draft.script_ready,false);
+  assert.deepEqual(service.state().dataset.review_counts,{draft:1,approved:0});
+  await service.resolveClip(draft.id,'civitai.com',signal);
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).script_ready,true);
+  assert.ok(calls.every(url=>url.startsWith('https://huggingface.co/')),'matching local video needs no Civitai API call');
+  const initial=createSession(song,1);initial.min_rating=5;
+  assert.throws(()=>arrange(initial,service.state().clips),/No usable clips/);
+  initial.include_drafts=true;initial.output={preset:'landscape-720',fit:'contain'};
+  const saved=await service.saveSession(arrange(initial,service.state().clips));
+  const reopened=await new ComposerService(service.root).init(),loaded=await reopened.loadSession(saved.id);
+  assert.equal(loaded.include_drafts,true);assert.equal(reopened.state().dataset.review_policy,'all-drafts');
+  const prepared=await reopened.prepare(loaded);assert.equal(prepared.snapshot.warnings.length,1);
+  const render=await reopened.render(loaded,signal);assert.deepEqual(await reopened.renderScripts(render.id),prepared.snapshot.scripts);
+  const manifest=JSON.parse(await fs.readFile(path.join(path.dirname(render.path),'manifest.json')));assert.equal(manifest.session.include_drafts,true);
+  const disabled=await reopened.saveSession({...loaded,include_drafts:false});
+  assert.equal((await reopened.loadSession(saved.id)).include_drafts,false);
+  await assert.rejects(()=>reopened.prepare(disabled),/draft scripts are disabled/);
+  await assert.rejects(()=>reopened.render(disabled,signal),/draft scripts are disabled/);
+  assert.equal((await fs.readdir(path.join(service.root,'renders'))).length,1,'disabled draft use never starts a render');
+  corrupt=true;await assert.rejects(()=>service.resolveClip(draft.id,'civitai.com',signal),/checksum mismatch/);corrupt=false;
+  assert.equal(service.catalog.clips.find(c=>c.id===draft.id).review_status,'draft','resolving never approves a draft');
+  review_status='approved';await service.refreshDataset();
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).review_status,'draft','all-drafts policy overrides stale approval labels');
+  review_policy='folder-approval';await service.refreshDataset();assert.equal(service.state().clips.find(c=>c.id===draft.id).review_status,'approved');
+  review_policy=undefined;review_status=undefined;await service.refreshDataset();
+  assert.equal(service.state().clips.find(c=>c.id===draft.id).review_status,'draft','missing review labels are unreviewed');
+});
+
 test('dataset requires catalog checksum and rejects credential redirects',async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-network-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const content=Buffer.from('');const commit='a'.repeat(40);
