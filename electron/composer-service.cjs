@@ -89,6 +89,7 @@ class ComposerService {
         const relative=path.relative(root,path.dirname(file)),category=relative||path.basename(root);
         found.push({id,name:path.basename(file),path:file,url:pathToFileURL(file).href,root,duration_ms:info.duration_ms,width:info.width,height:info.height,
           categories:existing?.manual_categories?existing.categories:[category],manual_categories:existing?.manual_categories||false,
+          ...(existing?.user_rating !== undefined ? {user_rating:existing.user_rating} : {}),
           civitai_id:/(?:^|_)civitai_([1-9]\d*)(?:_|\.)/i.exec(path.basename(file))?.[1]||null,
           review_status:existing?.review_status||'local',scripts,available:true,size:stat.size,mtime:stat.mtimeMs});
       }catch(e){if(signal?.aborted)throw e;warnings.push(`${path.basename(file)}: ${e.message}`);}
@@ -99,6 +100,12 @@ class ComposerService {
     await this.saveCatalog();return {count:found.length,warnings};
   }
   async tag(id,category){const c=this.catalog.clips.find(c=>c.id===id);if(!c)throw new Error('Clip not found.');category=String(category).trim();if(!category||category.length>160)throw new Error('Enter a category of 1–160 characters.');c.categories=[category];c.manual_categories=true;await this.saveCatalog();return this.state();}
+  async rate(id,rating){
+    if(rating!==null&&(!Number.isInteger(rating)||rating<0||rating>5))throw new Error('Rating must be an integer from 0 to 5, or null to reset.');
+    const clip=this.catalog.clips.find(c=>c.id===id);if(!clip)throw new Error('Clip not found.');
+    if(rating===null)delete clip.user_rating;else clip.user_rating=rating;
+    await this.saveCatalog();return this.state();
+  }
   async bytes(url,{signal,max=20*1024*1024,token='',media=false}={}){
     const allowed=media?new Set(['image.civitai.com','image.civitai.red','blobs-b2.civitai.com']):new Set(['huggingface.co','civitai.com','civitai.red','civitaired.com']);
     let current=url;

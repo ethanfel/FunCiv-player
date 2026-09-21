@@ -44,6 +44,21 @@ FunCiv uses its own `funciv-player` application data directory. It starts its ba
 
 Adjacent scripts use the same stem as the video: `clip.funscript` (L0), `clip.surge.funscript` (L1), `clip.sway.funscript` (L2), `clip.twist.funscript` (R0), `clip.roll.funscript` (R1), and `clip.pitch.funscript` (R2). Missing secondary axes stay neutral. Hidden folders and symlinks are excluded from recursive scans; ComfyUI's hidden review staging can be selected explicitly as a folder if needed.
 
+## Find available clips and choose ratings
+
+In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync FunCiv Data** for dataset variants. **Show** offers:
+
+- **All catalog:** matching local clips and remote variants. Remote entries may need **Resolve video + scripts** before use.
+- **Ready with motion:** locally available videos with a loaded L0 script, ready for Clip motion.
+- **Local videos:** available videos, including those without motion scripts; use Follow song or Neutral hold for those.
+- **Used in session:** the clips currently placed on your timeline, with a usage count. This view retains used clips below the minimum or marked draft so you can identify conflicts.
+
+Choose **Sort clips → Rating: highest first** to browse by stars. Set **Minimum rating for session → 4★ or higher** or **5★ only**, then click **Assemble** or **New variation**. Assembly varies its choices among qualifying clips; display sorting does not rearrange the timeline. Search, Show and Sort are browsing controls; the minimum rating also applies to assembly, manual replacement choices, preview and export. Unrated clips qualify only under **All ratings**. Draft inclusion remains a separate assembly filter.
+
+Stars initially use the dataset's `quality` rating for that script variant, not a Civitai popularity score. Local files start unrated; ComfyUI's internal review metadata is not imported from adjacent funscripts. Use **Rate this clip** to assign a local rating, or select **Use dataset rating** to reset an override. Your ratings persist across rescans, dataset refreshes and app restarts without changing the public dataset.
+
+The minimum is saved with the session. Raising it preserves your timeline and locks, pauses playback and requires preparation again. A warning identifies existing clips below the minimum; unlock their sections and reassemble, or replace them individually. Locked clips cannot bypass the minimum. Changing a used clip's rating also invalidates the prepared preview.
+
 ## FunCiv Data and Civitai
 
 **Sync FunCiv Data** imports the public [dataset catalog](https://huggingface.co/datasets/ethanfel/FunCiv-Data). The client pins a full repository commit and verifies the catalog and requested scripts against their SHA-256 values. It does not download the whole video library.
@@ -76,7 +91,7 @@ npm run test:composer:ui    # real Electron window; requires a desktop display
 npm test                   # inherited FunSync unit suite
 ```
 
-The UI test creates a disposable profile and synthetic clips, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also updates the screenshot above. It uses no account credentials or physical devices.
+The UI test creates a disposable profile and synthetic clips, checks availability views, rating sorting, 4★+/5★ selection, saved minimums and preview invalidation, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also updates the screenshot above. It uses no account credentials or physical devices.
 
 - [Detailed roadmap](PLAN.md)
 - [Integration research and reusable functions](docs/REUSE_MAP.md)

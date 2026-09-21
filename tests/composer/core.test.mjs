@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSession, arrange, compile, validateSession, remapActions, sourceTime, songTime, History } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, compile, validateSession, clipRating, remapActions, sourceTime, songTime, History } from '../../packages/composer-core/index.mjs';
 
 const script={actions:[{at:0,pos:0},{at:500,pos:100},{at:1000,pos:0}]};
 const clips=['a','b','c'].map(id=>({id,name:id,duration_ms:1000,available:true,categories:['A'],scripts:{L0:script,R0:script}}));
@@ -55,4 +55,35 @@ test('invalid ranges, gaps, rate, uncovered timeline and stale clip IDs are reje
 test('undo and redo isolate past snapshots',()=>{
   const history=new History(),s=createSession(song);history.record(s);s.sections[0].label='changed';
   const old=history.undo(s);assert.equal(old.sections[0].label,'Section 1');assert.equal(history.redo(old).sections[0].label,'changed');
+});
+
+test('minimum ratings select 4★+ or 5★ only and exclude unrated variants',()=>{
+  const rated=clips.map((c,i)=>({...c,quality:[4,5,0][i]}));
+  const s=createSession(song,1);s.min_rating=4;
+  const four=arrange(s,rated);assert.deepEqual(new Set(four.placements.map(p=>p.clip_id)),new Set(['a','b']));
+  s.min_rating=5;assert.ok(arrange(s,rated).placements.every(p=>p.clip_id==='b'));
+  assert.throws(()=>arrange(s,rated.filter(c=>c.id!=='b')),/5★ or higher/);
+  assert.throws(()=>arrange(s,clips),/5★ or higher/);
+  delete s.min_rating;assert.doesNotThrow(()=>compile(arrange(s,clips),clips),'legacy sessions still accept unrated clips');
+});
+
+test('rating overrides preserve explicit unrated and malformed ratings are not stars',()=>{
+  assert.equal(clipRating({quality:5}),5);
+  assert.equal(clipRating({quality:5,user_rating:0}),0);
+  assert.equal(clipRating({quality:2,user_rating:4}),4);
+  for(const quality of [undefined,null,'5',4.5,-1,6,NaN])assert.equal(clipRating({quality}),0);
+  const s=createSession(song,1);s.min_rating=5;
+  assert.throws(()=>arrange(s,clips.map(c=>({...c,quality:5,user_rating:0}))),/No usable clips/);
+  for(const min_rating of [null,'4',4.5,-1,6,NaN])assert.throws(()=>validateSession({...s,min_rating}),/Minimum rating/);
+});
+
+test('locked clips and existing placements cannot bypass the minimum at compilation',()=>{
+  const rated=clips.map((c,i)=>({...c,quality:[4,5,0][i]}));
+  const s=arrange({...createSession(song,1),min_rating:4},rated);s.sections[0].locked=true;s.min_rating=5;
+  assert.doesNotThrow(()=>validateSession(s),'a session can be edited while placements need fixing');
+  assert.throws(()=>arrange(s,rated),/Unlock affected sections/);
+  assert.throws(()=>compile(s,rated),/below the 5★ minimum/);
+  s.sections[0].locked=false;const fixed=arrange(s,rated);assert.doesNotThrow(()=>compile(fixed,rated));
+  fixed.placements[0].clip_id='a';assert.throws(()=>compile(fixed,rated),/below the 5★ minimum/);
+  fixed.sections[0].motion='hold';assert.throws(()=>compile(fixed,rated),/below the 5★ minimum/,'all motion policies honor rating');
 });

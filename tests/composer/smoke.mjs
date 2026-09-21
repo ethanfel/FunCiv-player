@@ -14,12 +14,13 @@ const userData=path.join(root,'profile'),library=path.join(root,'clips','Pulse')
 const service=await new ComposerService(path.join(userData,'composer')).init();
 const signal=new AbortController().signal;let app;
 try{
-  for(const [name,color] of [['A','teal'],['B','purple']]){
+  for(const [name,color] of [['A','teal'],['B','purple'],['C','gray']]){
     await service.run('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${color}:s=320x180:r=30:d=2`,'-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',path.join(library,`${name}.mp4`)],signal);
-    await fs.writeFile(path.join(library,`${name}.funscript`),JSON.stringify({actions:Array.from({length:9},(_,i)=>({at:i*250,pos:i%2?90:10}))}));
+    if(name!=='C')await fs.writeFile(path.join(library,`${name}.funscript`),JSON.stringify({actions:Array.from({length:9},(_,i)=>({at:i*250,pos:i%2?90:10}))}));
   }
   await service.run('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=220:duration=6','-af',"volume='0.5+0.5*sin(4*PI*t)':eval=frame",path.join(root,'Preview song.wav')],signal);
   await service.scan(path.join(root,'clips'),signal);const song=await service.importSong(path.join(root,'Preview song.wav'),signal);
+  service.catalog.clips.push({id:'synthetic-remote',name:'Remote fixture',origin:'dataset',quality:5,review_status:'approved',available:false,duration_ms:2000,categories:['Pulse']});await service.saveCatalog();
   app=await electron.launch({args:['--no-sandbox','--disable-gpu','--disable-frame-rate-limit','--disable-gpu-vsync',checkout],env:{...process.env,FUNCIV_USER_DATA:userData,CIVITAI_API_TOKEN:''},timeout:45000});
   const page=app.windows().find(p=>p.url().includes('index.html'))||await app.waitForEvent('window',{predicate:page=>page.url().includes('index.html'),timeout:30000}).catch(async()=>app.windows().find(p=>p.url().includes('index.html')));
   assert.ok(page,'main window opens');await page.setViewportSize({width:1500,height:1080});
@@ -31,7 +32,22 @@ try{
   await page.locator('.language-prompt__btn[data-locale=en]').click({force:true});
   console.log('Window and first-run language selection ready.');
   await page.locator('[data-view-id=composer]').click({force:true});
+  await until(()=>document.querySelectorAll('.fc-clip').length===4);
+  await page.locator('[data-field=library-view]').selectOption('ready');assert.equal(await page.locator('.fc-clip').count(),2);
+  await page.locator('[data-field=library-view]').selectOption('local');assert.equal(await page.locator('.fc-clip').count(),3);
+  const ids=await page.evaluate(()=>Object.fromEntries(window.app.composer.catalog.clips.map(c=>[c.name,c.id])));
+  await page.locator(`[data-field=rating][data-id="${ids['A.mp4']}"]`).selectOption('4');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='A.mp4').user_rating===4);
+  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
+  assert.equal(await page.locator('.fc-clip').first().getAttribute('data-clip-id'),ids['B.mp4']);
+  await page.locator('[data-field=library-sort]').selectOption('name');assert.equal(await page.locator('.fc-clip').first().getAttribute('data-clip-id'),ids['A.mp4']);
+  await page.locator('[data-field=library-sort]').selectOption('rating');
+  await page.locator('[data-field=min_rating]').selectOption('4');assert.equal(await page.locator('.fc-clip').count(),2,'unrated local video excluded');
+  await page.locator('[data-field=library-view]').selectOption('all');assert.equal(await page.locator('.fc-clip').count(),3,'remote variant remains discoverable');
+  await page.locator('[data-field=library-view]').selectOption('ready');
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
+  assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
   await page.locator('[data-action=analyze]').click({force:true});
   await until(()=>!!window.app.composer.session.analysis,{timeout:20000});
   await page.locator('[data-action=assemble]').click({force:true});
@@ -49,6 +65,44 @@ try{
   const clocks=await page.evaluate(()=>{const p=window.app.composer.player;return {audio:p.audio.currentTime,video:p.videos[p.active].currentTime,start:p.current.start_ms,paused:p.audio.paused};});
   assert.ok(Math.abs(clocks.video-(clocks.audio-clocks.start/1000))<.08);assert.ok(clocks.paused);
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===1);
+  await page.locator('[data-field=min_rating]').selectOption('5');
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'raising minimum invalidates preview');
+  await page.locator('[data-field=library-view]').selectOption('used');assert.equal(await page.locator('.fc-clip').count(),2,'used clips below minimum stay visible');
+  assert.ok(await page.locator('.fc-library > .fc-rating-warning').isVisible());
+  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('below the 5★ minimum'));
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null);
+  const lowPlacement=await page.evaluate(()=>{const c=window.app.composer;return c.session.placements.find(p=>c.catalog.clips.find(clip=>clip.id===p.clip_id).user_rating===4).id;});
+  await page.locator(`[data-placement="${lowPlacement}"]`).click({force:true});
+  assert.equal(await page.locator('[data-field=clip_id] option:checked').getAttribute('disabled'),'');
+  assert.equal(await page.locator('[data-field=clip_id] option:not(:disabled)').count(),1);
+  await page.locator('[data-action=assemble]').click({force:true});
+  await until(()=>window.app.composer.session.placements.every(p=>window.app.composer.catalog.clips.find(c=>c.id===p.clip_id).user_rating===5));
+  assert.equal(await page.locator('.fc-clip').count(),1);assert.equal(await page.locator('.fc-library > .fc-rating-warning').isVisible(),false);
+  await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===2&&!window.app.composer.dirty);
+  const sessionId=await page.evaluate(()=>window.app.composer.session.id);
+  await page.locator('[data-field=min_rating]').selectOption('4');
+  await page.locator('[data-field=saved]').selectOption(sessionId);await until(()=>window.app.composer.session.min_rating===5);
+  assert.equal(await page.locator('[data-field=min_rating]').inputValue(),'5','saved minimum restored');
+  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
+  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('4');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===4);
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'lowering a used rating invalidates preview');
+  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
+  // Delay the IPC response after compilation, then change a used rating before it arrives.
+  await page.evaluate(async()=>{
+    const c=window.app.composer,ipc=c.ipc;let compiled;
+    const ready=new Promise(resolve=>{compiled=resolve;}),gate=new Promise(resolve=>{window.releaseComposerPrepare=resolve;});
+    c.ipc=async function(action,payload){const result=await ipc.call(this,action,payload);if(action==='prepare'){compiled();await gate;}return result;};
+    window.pendingComposerPrepare=c.prepare().finally(()=>{c.ipc=ipc;});await ready;
+  });
+  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('4');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===4);
+  await page.evaluate(async()=>{window.releaseComposerPrepare();await window.pendingComposerPrepare;delete window.pendingComposerPrepare;delete window.releaseComposerPrepare;});
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'a late IPC response cannot restore a preview after a rating edit');
+  await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('5');
+  await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===5);
+  console.log('PASS: ready/local/used views, rating sort, 4★+/5★ assembly, stale-preview rejection, manual ratings and persisted minimum.');
   await page.locator('[data-field=motion]').selectOption('song');
   await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.blocks.some(b=>b.kind==='song')));

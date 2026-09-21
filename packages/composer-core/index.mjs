@@ -7,6 +7,17 @@ export const AXES = ['L0', 'L1', 'L2', 'R0', 'R1', 'R2'];
 export const SUFFIX = { L0: '', L1: '.surge', L2: '.sway', R0: '.twist', R1: '.roll', R2: '.pitch' };
 const finite = (n, label) => { if (!Number.isFinite(n)) throw new Error(`${label} must be a finite number.`); return n; };
 export const clone = value => structuredClone(value);
+const validRating = value => Number.isInteger(value) && value >= 0 && value <= 5;
+/** Ratings belong to a script variant. An explicit local override of zero means unrated. */
+export const clipRating = clip => validRating(clip?.user_rating) ? clip.user_rating : validRating(clip?.quality) ? clip.quality : 0;
+
+export function assertClipRatings(session, clips) {
+  const minimum = session.min_rating ?? 0, byId = new Map(clips.map(c => [c.id, c]));
+  for (const p of session.placements || []) {
+    const clip = byId.get(p.clip_id);
+    if (clipRating(clip) < minimum) throw new Error(`${clip?.name || 'A selected clip'} is below the ${minimum}★ minimum. Unlock affected sections and assemble again, or replace the clip.`);
+  }
+}
 
 export function validateActions(actions) {
   if (!Array.isArray(actions) || !actions.length) throw new Error('A script needs at least one action.');
@@ -24,7 +35,7 @@ export function createSession(song, count = 6) {
   if (duration < 1000) throw new Error('Choose a song at least one second long.');
   count = Math.max(1, Math.min(Math.floor(count), Math.floor(duration / 1000)));
   return { schema: SCHEMA, id: crypto.randomUUID(), revision: 0, name: song.name.replace(/\.[^.]+$/, ''),
-    song: clone(song), seed: 1, blend_ms: 150, analysis: null, placements: [],
+    song: clone(song), seed: 1, blend_ms: 150, min_rating: 0, analysis: null, placements: [],
     sections: Array.from({ length: count }, (_, i) => ({ id: crypto.randomUUID(), label: `Section ${i + 1}`,
       start_ms: Math.round(duration * i / count), end_ms: Math.round(duration * (i + 1) / count),
       category: '*', motion: 'clip', strength: 100, locked: false, gaps: [] })) };
@@ -46,6 +57,7 @@ export function validateSession(session, clips = null) {
   if (!Number.isFinite(session.blend_ms) || session.blend_ms < 0 || session.blend_ms > 2000) throw new Error('Blend must be between 0 and 2000 ms.');
   if (session.bpm !== undefined && (!Number.isFinite(session.bpm) || session.bpm < 30 || session.bpm > 300)) throw new Error('BPM must be between 30 and 300.');
   if (!Number.isInteger(session.seed) || !Number.isInteger(session.revision) || session.revision < 0) throw new Error('Invalid seed or revision.');
+  if (session.min_rating !== undefined && !validRating(session.min_rating)) throw new Error('Minimum rating must be an integer from 0 to 5.');
   const byId = clips && new Map(clips.map(c => [c.id, c]));
   const ids = new Set();
   for (const p of session.placements || []) {
@@ -88,12 +100,13 @@ export function arrange(session, clips) {
     if (section.locked) {
       const existing = session.placements.filter(p => p.section_id === section.id);
       if (!existing.length) throw new Error(`Unlock ${section.label} before its first assembly.`);
+      assertClipRatings({...session, placements:existing}, clips);
       placements.push(...clone(existing)); previous=existing.at(-1).clip_id; continue;
     }
-    const pool = clips.filter(c => c.available !== false && c.duration_ms >= 100 &&
+    const pool = clips.filter(c => c.available !== false && c.duration_ms >= 100 && clipRating(c) >= (session.min_rating ?? 0) &&
       (section.category === '*' || (c.categories || []).includes(section.category)) &&
       (['song','hold'].includes(section.motion) || c.scripts?.L0 || c.script_ready)).sort((a,b) => a.id.localeCompare(b.id));
-    if (!pool.length) throw new Error(`No usable clips for ${section.label}. Choose a category with local clips${['clip','gaps'].includes(section.motion) ? ' and L0 scripts, or use Follow song' : ''}.`);
+    if (!pool.length) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check the minimum rating, draft filter and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
     let start = section.start_ms;
     while (start < section.end_ms) {
       const alternatives = pool.filter(c => c.id !== previous), choices = alternatives.length ? alternatives : pool;
@@ -121,7 +134,7 @@ export function validateCoverage(session) {
 }
 
 export function compile(session, clips) {
-  validateSession(session, clips); validateCoverage(session);
+  validateSession(session, clips); validateCoverage(session); assertClipRatings(session, clips);
   const duration = Math.round(session.song.duration_ms), byId = new Map(clips.map(c => [c.id,c]));
   const tracks = Object.fromEntries(AXES.map(axis => [axis, [{ at:0,pos:50 }, { at:duration,pos:50 }]]));
   const warnings = [], blocks = [];

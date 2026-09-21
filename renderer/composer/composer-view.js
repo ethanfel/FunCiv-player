@@ -1,4 +1,4 @@
-import { createSession, arrange, validateSession, History, clone } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, validateSession, clipRating, History, clone } from '../../packages/composer-core/index.mjs';
 import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
 import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { CompositionPlayer } from './composition-player.js';
@@ -8,11 +8,13 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
 const options=(values,selected)=>values.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');
 const policies=[['clip','Clip motion'],['song','Follow song'],['gaps','Clip + marked gaps'],['hold','Neutral hold']];
+const ratingLabel=rating=>rating ? `${rating}★` : 'Unrated';
+const ready=clip=>clip.available&&clip.script_ready;
 
 export class ComposerView {
   constructor(app,root){
     this.app=app;this.root=root;this.history=new History();this.catalog={clips:[],songs:[]};this.saved=[];this.revisions=new Map();
-    this.devices=new ComposerDeviceSession(app);this.analysisGeneration=0;this.selected=0;this.dirty=false;
+    this.devices=new ComposerDeviceSession(app);this.analysisGeneration=0;this.preparationGeneration=0;this.selected=0;this.dirty=false;this.defaultMinRating=0;
     this.root.innerHTML=`
       <header class="fc-header"><div><span class="fc-eyebrow">FUNCIV / COMPOSER</span><h1>Make a session from a song.</h1></div>
         <div class="fc-actions"><select data-field="saved" aria-label="Saved sessions"><option value="">Open session…</option></select><button data-action="save">Save session</button><button data-action="import" class="fc-primary">＋ Load song</button></div></header>
@@ -21,7 +23,12 @@ export class ComposerView {
         <aside class="fc-library"><div class="fc-panel-heading"><h2>Clip library</h2><button data-action="scan">＋ Folder</button></div>
           <div class="fc-library-tools"><button data-action="dataset">Sync FunCiv Data</button><button data-action="credentials">API settings</button></div>
           <label class="fc-search">Find clips<input data-field="search" type="search" placeholder="Name or category…"></label>
+          <label>Show<select data-field="library-view"><option value="all">All catalog</option><option value="ready">Ready with motion</option><option value="local">Local videos</option><option value="used">Used in session</option></select></label>
+          <label>Minimum rating for session<select data-field="min_rating">${options([[0,'All ratings (including unrated)'],[1,'1★ or higher'],[2,'2★ or higher'],[3,'3★ or higher'],[4,'4★ or higher'],[5,'5★ only']].map(([n,label])=>[String(n),label]),'0')}</select></label>
+          <small>Applies to assembly, preview and export.</small>
+          <label>Sort clips<select data-field="library-sort"><option value="rating">Rating: highest first</option><option value="name">Name: A–Z</option></select></label>
           <label class="fc-check"><input data-field="drafts" type="checkbox"> Include draft scripts</label>
+          <div class="fc-rating-warning" role="status" hidden></div>
           <div class="fc-library-count"></div><div class="fc-clips"></div>
         </aside>
         <main class="fc-main">
@@ -58,7 +65,7 @@ export class ComposerView {
   hide(){this.visible=false;this.player.pause();this.devices.release();this.analysisGeneration++;this.tick(this.position||0);}
   message(text,error=false){const box=this.root.querySelector('.fc-status');box.classList.toggle('fc-error',error);box.querySelector('[data-status]').textContent=text;}
   async refresh(){
-    this.catalog=await this.ipc('state');this.saved=await this.ipc('sessions');
+    this.catalog=await this.ipc('state');if(this.ratingConflicts().length)this.invalidate();this.saved=await this.ipc('sessions');
     this.root.querySelector('[data-field=saved]').innerHTML='<option value="">Open session…</option>'+options(this.saved.map(s=>[s.id,s.name]),'');
     this.root.querySelector('[data-field=song]').innerHTML='<option value="">Recent songs…</option>'+options(this.catalog.songs.map(s=>[s.id,s.name]),'');
     this.renderLibrary();
@@ -76,14 +83,14 @@ export class ComposerView {
       }
     }finally{this.busy=false;this.jobId=null;progress.hidden=true;cancel.hidden=true;}
   }
-  invalidate(){this.player.pause();this.player.snapshot=null;this.devices.release();this.prepared=null;this.root.querySelector('.fc-preview-label').textContent='PREVIEW · NEEDS PREPARATION';}
+  invalidate(){this.preparationGeneration++;this.player.pause();this.player.snapshot=null;this.devices.release();this.prepared=null;this.root.querySelector('.fc-preview-label').textContent='PREVIEW · NEEDS PREPARATION';}
   edit(fn,{keepPlacements=false}={}){
     if(!this.session)throw new Error('Load a song first.');
     const next=clone(this.session);fn(next);if(!keepPlacements){next.placements=[];next.sections.forEach(s=>{s.locked=false;});delete next.asset_bindings;}
     validateSession(next);this.history.record(this.session);this.invalidate();this.session=next;this.dirty=true;this.renderEditor();
   }
   newSong(song){
-    this.analysisGeneration++;this.invalidate();this.session=createSession(song);this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.renderEditor();this.message('Song ready. Analyze it, choose categories, then assemble.');
+    this.analysisGeneration++;this.invalidate();const minimum=this.minimumRating();this.session=createSession(song);this.session.min_rating=minimum;this.selected=0;this.selectedPlacement=null;this.history=new History();this.dirty=true;this.position=0;this.renderEditor();this.message('Song ready. Analyze it, choose categories, then assemble.');
   }
   discardOkay(){return !this.dirty||window.confirm('Leave this session without saving your changes?');}
   async action(action,button){
@@ -144,7 +151,20 @@ export class ComposerView {
   }
   async change(input){
     const field=input.dataset.field;if(!field)return;
-    if(field==='drafts'){this.includeDrafts=input.checked;this.renderLibrary();return;}
+    if(field==='drafts'){this.includeDrafts=input.checked;this.renderLibrary();this.renderInspector();return;}
+    if(field==='library-view'||field==='library-sort'){this.renderLibrary();return;}
+    if(field==='min_rating'){
+      const minimum=Number(input.value);
+      if(this.session)this.edit(s=>{s.min_rating=minimum;},{keepPlacements:true});
+      else{this.defaultMinRating=minimum;this.renderLibrary();}
+      this.message(minimum?`Only clips rated ${minimum}★ or higher qualify. Assemble to update existing choices.`:'All ratings qualify, including unrated clips.');return;
+    }
+    if(field==='rating'){
+      const used=this.session?.placements.some(p=>p.clip_id===input.dataset.id);if(used)this.invalidate();
+      this.catalog=await this.ipc('rating',{id:input.dataset.id,rating:input.value===''?null:Number(input.value)});
+      if(used||this.ratingConflicts().length)this.invalidate();this.renderLibrary();this.renderInspector();this.draw();
+      this.message('Clip rating saved. Reassemble if a used clip is below the session minimum.');return;
+    }
     if(field==='volume'){this.player.audio.volume=Number(input.value);return;}
     if(field==='search')return;
     if(field==='seek'){this.setPosition(Number(input.value));return;}
@@ -178,21 +198,44 @@ export class ComposerView {
   }
   async prepare(){
     if(this.preparing)throw new Error('Preview is being prepared.');this.preparing=true;
-    try{this.invalidate();const session=this.session;this.message('Compiling the session…');const prepared=await this.ipc('prepare',{session});
-      if(this.session!==session||!this.visible)return;
+    try{this.invalidate();const generation=this.preparationGeneration,session=this.session;this.message('Compiling the session…');const prepared=await this.ipc('prepare',{session});
+      if(this.session!==session||!this.visible||generation!==this.preparationGeneration)return;
       this.prepared=prepared;this.session.asset_bindings=prepared.asset_bindings;
       await this.player.load(prepared.snapshot,prepared.clips);this.root.querySelector('.fc-preview-empty').hidden=true;this.draw();
       this.message(prepared.snapshot.warnings.length?prepared.snapshot.warnings.join(' · '):'Preview ready. Video, motion and audio share the song clock.');
     }finally{this.preparing=false;}
   }
+  minimumRating(){return this.session ? this.session.min_rating??0 : this.defaultMinRating;}
+  ratingConflicts(){
+    const clips=new Map(this.catalog.clips.map(c=>[c.id,c]));
+    return [...new Set((this.session?.placements||[]).filter(p=>clipRating(clips.get(p.clip_id))<this.minimumRating()).map(p=>p.clip_id))];
+  }
   renderLibrary(){
     const search=this.root.querySelector('[data-field=search]').value.toLowerCase();
-    const clips=this.catalog.clips.filter(c=>(this.includeDrafts||c.review_status!=='draft')&&`${c.name} ${(c.categories||[]).join(' ')}`.toLowerCase().includes(search));
-    this.root.querySelector('.fc-library-count').textContent=`${clips.length} shown · ${this.catalog.clips.filter(c=>c.available).length} local`;
-    this.root.querySelector('.fc-clips').innerHTML=clips.map(c=>`<article class="fc-clip"><div class="fc-clip-top"><strong>${esc(c.name)}</strong><span>${stamp(c.duration_ms)}</span></div><small>${esc(c.review_status)} · ${c.script_ready?(c.axes||[]).join(' / '):c.origin==='dataset'?'scripts not fetched':'no motion script'}</small><label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${c.available&&c.script_ready?'Verify / refresh':'Resolve video + scripts'}</button>`:!c.available?'<small>File unavailable — rescan its folder.</small>':''}</article>`).join('')||'<p class="fc-empty">Add your downloaded clip folder, or sync the dataset to browse script variants.</p>';
+    const view=this.root.querySelector('[data-field=library-view]').value,sort=this.root.querySelector('[data-field=library-sort]').value,minimum=this.minimumRating();
+    this.root.querySelector('[data-field=min_rating]').value=String(minimum);
+    const used=new Map();for(const p of this.session?.placements||[])used.set(p.clip_id,(used.get(p.clip_id)||0)+1);
+    const clips=this.catalog.clips.filter(c=>
+      (view==='used'?used.has(c.id):(this.includeDrafts||c.review_status!=='draft')&&clipRating(c)>=minimum)&&
+      (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&`${c.name} ${(c.categories||[]).join(' ')}`.toLowerCase().includes(search))
+      .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
+    const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;
+    warning.textContent=`${conflicts.length} used clip${conflicts.length===1?' is':'s are'} below ${minimum}★. Unlock affected sections and assemble again, or replace them. “Used in session” keeps these clips visible.`;
+    this.root.querySelector('.fc-library-count').textContent=`${clips.length} shown · ${clips.filter(ready).length} ready with motion · ${clips.filter(c=>c.available&&!c.script_ready).length} video only · ${clips.filter(c=>!c.available).length} unavailable`;
+    this.root.querySelector('.fc-clips').innerHTML=clips.map(c=>{
+      const rating=clipRating(c),override=c.user_rating!==undefined;
+      const status=ready(c)?'Ready · video + motion':c.origin==='dataset'?'Needs resolving · video + scripts':c.available?'Video only · use Follow song':'Unavailable · rescan folder';
+      return `<article class="fc-clip" data-clip-id="${esc(c.id)}" data-rating="${rating}"><div class="fc-clip-top"><strong title="${esc(c.name)}">${esc(c.name)}</strong><span>${stamp(c.duration_ms)}</span></div>
+        <div class="fc-clip-rating" aria-label="${rating?`${rating} out of 5 stars`:'Unrated'}">${rating?'★'.repeat(rating)+'☆'.repeat(5-rating):'Unrated'}<small>${override?'Your rating':c.origin==='dataset'?'Dataset rating':'No rating yet'}</small></div>
+        <div class="fc-clip-availability ${ready(c)?'fc-ready':''}">${status}</div>
+        <small>${esc(c.review_status)}${c.script_ready?' · '+esc((c.axes||[]).join(' / ')):''}${used.has(c.id)?` · Used ${used.get(c.id)}×`:''}</small>
+        ${rating<minimum?'<div class="fc-rating-warning">Below session minimum</div>':''}
+        <label>Rate this clip<select data-field="rating" data-id="${esc(c.id)}" aria-label="Rating for ${esc(c.name)}">${options([['',c.origin==='dataset'?`Use dataset rating (${ratingLabel(clipRating({quality:c.quality}))})`:'No local rating'],...Array.from({length:6},(_,n)=>[String(n),ratingLabel(n)])],override?String(c.user_rating):'')}</select></label>
+        <label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${ready(c)?'Verify / refresh':'Resolve video + scripts'}</button>`:''}</article>`;
+    }).join('')||`<p class="fc-empty">${!this.catalog.clips.length?'Add your downloaded clip folder, or sync the dataset to browse script variants.':view==='used'?'No used clips match. Assemble a session or clear the search.':'No clips match. Lower the minimum rating, change the view, or clear the search.'}</p>`;
   }
   renderEditor(){
-    const s=this.session;if(!s)return;
+    this.renderLibrary();const s=this.session;if(!s)return;
     this.selected=Math.min(this.selected,s.sections.length-1);
     this.root.querySelector('.fc-song-title').textContent=`${s.name} · ${stamp(s.song.duration_ms)}`;
     this.root.querySelector('[data-field=seek]').max=s.song.duration_ms;
@@ -207,9 +250,11 @@ export class ComposerView {
     if(!this.session)return;const s=this.session,section=s.sections[this.selected];
     const categories=[...new Set(this.catalog.clips.flatMap(c=>c.categories||[]).concat(section.category))].filter(c=>c!=='*').sort();
     const p=s.placements.find(p=>p.id===this.selectedPlacement);
+    const replacements=this.catalog.clips.filter(c=>c.available&&clipRating(c)>=this.minimumRating()&&(this.includeDrafts||c.review_status!=='draft'));
+    const current=p&&!replacements.some(c=>c.id===p.clip_id)?`<option value="${esc(p.clip_id)}" selected disabled>Current: ${esc(this.catalog.clips.find(c=>c.id===p.clip_id)?.name||'Missing clip')} (outside filters)</option>`:'';
     this.root.querySelector('.fc-inspector-content').innerHTML=`<label>Name<input data-field="label" value="${esc(section.label)}"></label><label>Category<select data-field="category">${options([['*','Any category'],...categories.map(c=>[c,c])],section.category)}</select></label><label>Motion<select data-field="motion">${options(policies,section.motion)}</select></label><label>Strength (%)<input data-field="strength" type="number" min="0" max="100" value="${section.strength}"></label><label>Section ends at (seconds)<input data-field="end_ms" type="number" step="0.001" value="${section.end_ms/1000}" ${this.selected===s.sections.length-1?'disabled':''}></label><label class="fc-check"><input data-field="locked" type="checkbox" ${section.locked?'checked':''}> Keep clips on variation</label>
       ${section.motion==='gaps'?`<div class="fc-gap"><h3>Marked motion gaps</h3><p>Only these ranges receive song motion.</p><label>Start (seconds)<input data-gap="start" type="number" step="0.01" value="${section.start_ms/1000}"></label><label>End (seconds)<input data-gap="end" type="number" step="0.01" value="${section.end_ms/1000}"></label><button data-action="mark-gap">Add gap</button><button data-action="clear-gaps">Clear</button><small>${section.gaps.map(([a,b])=>stamp(a)+'–'+stamp(b)).join(', ')||'No gaps marked'}</small></div>`:''}
-      ${p?`<div class="fc-gap"><h3>Selected clip</h3><label>Replace with<select data-field="clip_id">${options(this.catalog.clips.filter(c=>c.available&&(this.includeDrafts||c.review_status!=='draft')).map(c=>[c.id,c.name]),p.clip_id)}</select></label><label>Source in (seconds)<input data-field="source_in_ms" type="number" min="0" step="0.01" value="${p.source_in_ms/1000}"></label><label>Speed<input data-field="rate" type="number" min="0.25" max="4" step="0.05" value="${p.rate}"></label><small>${stamp(p.start_ms)}–${stamp(p.end_ms)} on song</small></div>`:''}`;
+      ${p?`<div class="fc-gap"><h3>Selected clip</h3><label>Replace with<select data-field="clip_id">${current}${options(replacements.map(c=>[c.id,`${ratingLabel(clipRating(c))} · ${c.name}`]),p.clip_id)}</select></label><label>Source in (seconds)<input data-field="source_in_ms" type="number" min="0" step="0.01" value="${p.source_in_ms/1000}"></label><label>Speed<input data-field="rate" type="number" min="0.25" max="4" step="0.05" value="${p.rate}"></label><small>${stamp(p.start_ms)}–${stamp(p.end_ms)} on song</small></div>`:''}`;
     this.root.querySelector('.fc-session-settings').innerHTML=`<h2>Session</h2><label>Name<input data-field="name" value="${esc(s.name)}"></label><label>Song BPM<input data-field="bpm" type="number" min="30" max="300" value="${s.bpm||120}"></label><label>Motion blend (ms)<input data-field="blend_ms" type="number" min="0" max="2000" step="10" value="${s.blend_ms}"></label><p>Video uses clean cuts. Motion blends around each cut. Beat analysis is a starting point; sections remain editable.</p>`;
   }
   tick(time=0){

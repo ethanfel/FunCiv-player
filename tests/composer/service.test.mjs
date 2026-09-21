@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ComposerService, hash } from '../../electron/composer-service.cjs';
-import { createSession, arrange } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, clipRating } from '../../packages/composer-core/index.mjs';
 
 test('local import → arrangement → persisted recipe → real FFmpeg render',async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-service-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
@@ -15,11 +15,17 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   const script={actions:[{at:0,pos:10},{at:300,pos:90},{at:600,pos:10},{at:900,pos:90},{at:1200,pos:10}]};
   await fs.writeFile(path.join(library,'clip.funscript'),JSON.stringify(script));
   const result=await service.scan(library,signal);assert.equal(result.count,1);assert.equal(result.warnings.length,0);
+  const clipId=service.state().clips[0].id;await service.rate(clipId,5);await service.scan(library,signal);
+  assert.equal(service.state().clips[0].user_rating,5,'local ratings survive rescans');
   const song=await service.importSong(path.join(root,'song.wav'),signal);assert.equal(song.duration_ms,2800);
-  const initial=arrange(createSession(song,2),service.state().clips),saved=await service.saveSession(initial);
+  const initial=arrange({...createSession(song,2),min_rating:5},service.state().clips),saved=await service.saveSession(initial);
   assert.equal(saved.revision,1);assert.deepEqual(await service.loadSession(saved.id),saved);
   await assert.rejects(()=>service.saveSession(initial),/newer saved session/);
   const prepared=await service.prepare(saved);assert.equal(prepared.snapshot.placements.length,4);
+  await service.rate(clipId,4);
+  await assert.rejects(()=>service.prepare(saved),/below the 5★ minimum/);
+  await assert.rejects(()=>service.render(saved,signal),/below the 5★ minimum/);
+  await service.rate(clipId,5);assert.equal((await service.prepare(saved)).snapshot.placements.length,4,'rating changes do not alter media bindings');
   const render=await service.render(saved,signal);
   assert.ok(Math.abs(render.duration_ms-2800)<=100);
   const info=await service.probe(render.path,signal);assert.ok(info.video&&info.audio);assert.equal(info.width,1280);assert.equal(info.height,720);
@@ -35,6 +41,27 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   await assert.rejects(()=>service.deleteRender('../clips'),/Invalid render/);
   await service.deleteRender(render.id);assert.equal((await fs.readdir(path.join(root,'data','renders'))).length,0);
   await fs.access(path.join(library,'clip.mp4'));
+});
+
+test('local rating overrides survive dataset refresh and restart; reset restores source quality',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-rating-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  let quality=5;
+  const row=()=>({civitai_id:'123',variant_id:'b'.repeat(64),duration_ms:1000,quality,review_status:'approved',scripts:{}});
+  const service=await new ComposerService(root,{fetchImpl:async url=>{
+    const content=JSON.stringify(row())+'\n';
+    if(url.includes('/api/datasets/'))return new Response(JSON.stringify({sha:'a'.repeat(40)}));
+    if(url.endsWith('manifest.json'))return new Response(JSON.stringify({schema:'s3f-public-funscripts/1',files:{'data/catalog.jsonl':hash(content)}}));
+    return new Response(content);
+  }}).init();
+  await service.refreshDataset();const id=service.state().clips[0].id;
+  await service.rate(id,4);quality=3;await service.refreshDataset();
+  assert.equal(service.state().clips[0].quality,3);assert.equal(clipRating(service.state().clips[0]),4);
+  const reopened=await new ComposerService(root).init();assert.equal(clipRating(reopened.state().clips[0]),4);
+  await reopened.rate(id,0);assert.equal(clipRating(reopened.state().clips[0]),0);
+  await reopened.rate(id,null);assert.equal(clipRating(reopened.state().clips[0]),3);
+  assert.equal(reopened.state().clips[0].user_rating,undefined);
+  for(const rating of [undefined,'5',-1,6,4.5])await assert.rejects(()=>reopened.rate(id,rating),/Rating must/);
+  await assert.rejects(()=>reopened.rate('missing',5),/Clip not found/);
 });
 
 test('dataset requires catalog checksum and rejects credential redirects',async t=>{
