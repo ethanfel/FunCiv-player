@@ -232,14 +232,19 @@ class ComposerService {
     const {snapshot,clips}=await this.prepare(session),song=this.catalog.songs.find(s=>s.id===session.song.id);
     if(!song)throw new Error('Song is not in the catalog. Import it again.');
     const id=randomUUID(),directory=path.join(this.root,'renders',id);await fs.mkdir(directory,{recursive:true});
-    const byId=new Map(clips.map(c=>[c.id,c])),fps=30,parts=[];let finished=false;
+    const byId=new Map(clips.map(c=>[c.id,c])),{width,height,fps,fit}=snapshot.output,parts=[];let finished=false;
+    // Scale using display aspect ratio (including non-square pixels), then crop
+    // or pad centrally. Even dimensions keep H.264/yuv420p inputs compatible.
+    const sizing=fit==='cover'
+      ? `scale=w='max(${width},ceil(${height}*dar/2)*2)':h='max(${height},ceil(${width}/dar/2)*2)',setsar=1,crop=${width}:${height}:(iw-ow)/2:(ih-oh)/2`
+      : `scale=w='min(${width},max(2,trunc(${height}*dar/2)*2))':h='min(${height},max(2,trunc(${width}/dar/2)*2))',setsar=1,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
     try{
       for(let i=0;i<snapshot.placements.length;i++){
         signal.throwIfAborted();const p=snapshot.placements[i],clip=byId.get(p.clip_id),file=path.join(directory,`part-${i}.mp4`);
         // Quantize absolute boundaries rather than rounding each clip duration.
         const frames=Math.round(p.end_ms*fps/1000)-Math.round(p.start_ms*fps/1000);if(frames<=0)continue;
         update(i/(snapshot.placements.length+1),`Rendering clip ${i+1}/${snapshot.placements.length}`);
-        const filter=`setpts=(PTS-STARTPTS)/${p.rate},scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},tpad=stop_mode=clone:stop_duration=1`;
+        const filter=`setpts=(PTS-STARTPTS)/${p.rate},${sizing},fps=${fps},tpad=stop_mode=clone:stop_duration=1`;
         await this.run(this.ffmpeg,['-v','error','-nostdin','-y','-ss',String(p.source_in_ms/1000),'-i',clip.path,'-an','-vf',filter,'-frames:v',String(frames),'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-threads','2',file],signal);parts.push(path.basename(file));
       }
       await fs.writeFile(path.join(directory,'concat.txt'),parts.map(p=>`file '${p}'`).join('\n'));
@@ -247,9 +252,10 @@ class ComposerService {
       await this.run(this.ffmpeg,['-v','error','-nostdin','-y','-f','concat','-safe','1','-i',path.join(directory,'concat.txt'),'-i',song.path,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','192k','-t',String(snapshot.duration_ms/1000),'-movflags','+faststart',video],signal);
       for(const [axis,suffix] of Object.entries(AXES))await atomic(path.join(directory,'session'+suffix+'.funscript'),snapshot.scripts[axis]);
       const info=await this.probe(video,signal);if(Math.abs(info.duration_ms-snapshot.duration_ms)>100)throw new Error('Export duration validation failed.');
-      await atomic(path.join(directory,'manifest.json'),{schema:'funciv-render/1',id,session,created_at:new Date().toISOString(),assets:this.bindings(clips),video_sha256:await fileHash(video),duration_ms:info.duration_ms});
+      if(info.width!==width||info.height!==height)throw new Error('Export resolution validation failed.');
+      await atomic(path.join(directory,'manifest.json'),{schema:'funciv-render/1',id,session,output:snapshot.output,created_at:new Date().toISOString(),assets:this.bindings(clips),video_sha256:await fileHash(video),duration_ms:info.duration_ms});
       for(const part of parts)await fs.rm(path.join(directory,part));await fs.rm(path.join(directory,'concat.txt'));
-      finished=true;return {id,path:video,scriptPath:path.join(directory,'session.funscript'),name:session.name+'.mp4',duration_ms:info.duration_ms};
+      finished=true;return {id,path:video,scriptPath:path.join(directory,'session.funscript'),name:session.name+'.mp4',duration_ms:info.duration_ms,output:snapshot.output};
     }finally{if(!finished)await fs.rm(directory,{recursive:true,force:true});}
   }
 }

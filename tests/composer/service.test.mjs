@@ -18,7 +18,8 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   const clipId=service.state().clips[0].id;await service.rate(clipId,5);await service.scan(library,signal);
   assert.equal(service.state().clips[0].user_rating,5,'local ratings survive rescans');
   const song=await service.importSong(path.join(root,'song.wav'),signal);assert.equal(song.duration_ms,2800);
-  const initial=arrange({...createSession(song,2),min_rating:5},service.state().clips),saved=await service.saveSession(initial);
+  const initial=arrange({...createSession(song,2),min_rating:5},service.state().clips);delete initial.output; // Legacy landscape recipe.
+  const saved=await service.saveSession(initial);
   assert.equal(saved.revision,1);assert.deepEqual(await service.loadSession(saved.id),saved);
   await assert.rejects(()=>service.saveSession(initial),/newer saved session/);
   const prepared=await service.prepare(saved);assert.equal(prepared.snapshot.placements.length,4);
@@ -41,6 +42,55 @@ test('local import → arrangement → persisted recipe → real FFmpeg render',
   await assert.rejects(()=>service.deleteRender('../clips'),/Invalid render/);
   await service.deleteRender(render.id);assert.equal((await fs.readdir(path.join(root,'data','renders'))).length,0);
   await fs.access(path.join(library,'clip.mp4'));
+});
+
+test('portrait export fills mixed resolutions with centered crops, square pixels and matching scripts',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-portrait-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const service=await new ComposerService(path.join(root,'data')).init(),signal=new AbortController().signal;
+  const library=path.join(root,'clips');await fs.mkdir(library);
+  const fixtures=[
+    {name:'wide',size:'320x180',fps:24,borders:'drawbox=x=0:y=0:w=80:h=ih:color=red:t=fill,drawbox=x=240:y=0:w=80:h=ih:color=red:t=fill',markerWidth:20},
+    {name:'square',size:'160x160',fps:25,borders:'drawbox=x=0:y=0:w=30:h=ih:color=red:t=fill,drawbox=x=130:y=0:w=30:h=ih:color=red:t=fill',markerWidth:20},
+    {name:'tall',size:'90x320',fps:60,borders:'drawbox=x=0:y=0:w=iw:h=80:color=red:t=fill,drawbox=x=0:y=240:w=iw:h=80:color=red:t=fill',markerWidth:20},
+    {name:'portrait',size:'180x320',fps:30,markerWidth:20},
+    {name:'anamorphic',size:'160x180',fps:30,borders:'drawbox=x=0:y=0:w=40:h=ih:color=red:t=fill,drawbox=x=120:y=0:w=40:h=ih:color=red:t=fill',markerWidth:10,sar:'2/1'},
+  ];
+  for(const f of fixtures){
+    const filter=[f.borders,`drawbox=x=(iw-${f.markerWidth})/2:y=(ih-20)/2:w=${f.markerWidth}:h=20:color=white:t=fill`,`setsar=${f.sar||1}`].filter(Boolean).join(',');
+    await service.run('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=0x20a080:s=${f.size}:r=${f.fps}:d=1`,'-vf',filter,'-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',path.join(library,f.name+'.mp4')],signal);
+  }
+  // Rotation metadata is applied before display-aspect scaling.
+  await service.run('ffmpeg',['-v','error','-display_rotation:v:0','90','-i',path.join(library,'wide.mp4'),'-c','copy',path.join(library,'rotated.mp4')],signal);
+  const rotated=JSON.parse(await service.run('ffprobe',['-v','error','-show_streams','-of','json',path.join(library,'rotated.mp4')],signal));
+  assert.ok(rotated.streams[0].side_data_list?.some(s=>s.rotation===90),'fixture carries a rotation matrix');
+  fixtures.push({name:'rotated',redCorners:true});
+  await service.run('ffmpeg',['-v','error','-f','lavfi','-i',`sine=frequency=220:duration=${fixtures.length}`,path.join(root,'song.wav')],signal);
+  await service.scan(library,signal);const song=await service.importSong(path.join(root,'song.wav'),signal);
+  for(const c of service.catalog.clips)await service.tag(c.id,c.name);
+  const session=createSession(song,fixtures.length);session.sections.forEach((s,i)=>{s.category=fixtures[i].name+'.mp4';s.motion='hold';});
+  const saved=await service.saveSession(arrange(session,service.state().clips));
+  assert.deepEqual((await service.loadSession(saved.id)).output,{preset:'portrait-1080',fit:'cover'});
+  const prepared=await service.prepare(saved),render=await service.render(saved,signal);
+  const info=JSON.parse(await service.run('ffprobe',['-v','error','-show_streams','-of','json',render.path],signal));
+  const video=info.streams.find(s=>s.codec_type==='video');
+  assert.equal(video.width,1080);assert.equal(video.height,1920);assert.equal(video.sample_aspect_ratio,'1:1');assert.equal(video.avg_frame_rate,'30/1');
+  assert.deepEqual(await service.renderScripts(render.id),prepared.snapshot.scripts);
+  const manifest=JSON.parse(await fs.readFile(path.join(path.dirname(render.path),'manifest.json')));
+  assert.deepEqual(manifest.output,prepared.snapshot.output);
+  for(let i=0;i<fixtures.length;i++){
+    const file=path.join(root,`frame-${i}.rgb`);
+    await service.run('ffmpeg',['-v','error','-ss',String(i+.5),'-i',render.path,'-frames:v','1','-vf','scale=108:192:flags=neighbor','-pix_fmt','rgb24','-f','rawvideo','-threads','1',file],signal);
+    const data=await fs.readFile(file);assert.equal(data.length,108*192*3);
+    for(const [x,y] of [[3,3],[104,3],[3,188],[104,188]]){
+      const [r,g,b]=data.subarray((y*108+x)*3,(y*108+x)*3+3);
+      assert.ok(fixtures[i].redCorners?r>180&&g<60:g>100&&r<90&&b>70,`${fixtures[i].name}: crop corners contain the expected image, not padding or discarded edges (${r},${g},${b})`);
+    }
+    const white=[];for(let y=0;y<192;y++)for(let x=0;x<108;x++)if(data.subarray((y*108+x)*3,(y*108+x)*3+3).every(v=>v>225))white.push([x,y]);
+    assert.ok(white.length>0);const xs=white.map(p=>p[0]),ys=white.map(p=>p[1]);
+    const left=Math.min(...xs),right=Math.max(...xs),top=Math.min(...ys),bottom=Math.max(...ys);
+    assert.ok(Math.abs((right-left+1)/(bottom-top+1)-1)<.15,`${fixtures[i].name}: square marker is not stretched`);
+    assert.ok(Math.abs((left+right)/2-53.5)<2&&Math.abs((top+bottom)/2-95.5)<2,`${fixtures[i].name}: crop is centered`);
+  }
 });
 
 test('local rating overrides survive dataset refresh and restart; reset restores source quality',async t=>{

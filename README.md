@@ -8,7 +8,7 @@ This is an early working fork of [FunSync Player](https://github.com/DaveMakesWa
 
 ## Run locally
 
-Requires Node.js 22.15+ (tested with 24), Python 3.10+, FFmpeg and FFprobe on `PATH`, and a desktop environment for Electron. On this workstation, dependencies have already been installed in this checkout.
+Requires Node.js 22.15+ (tested with 24), Python 3.10+, FFmpeg 6+ and FFprobe on `PATH`, and a desktop environment for Electron. On this workstation, dependencies have already been installed in this checkout.
 
 ```bash
 cd /media/p5/FunCiv-player
@@ -71,9 +71,15 @@ Draft scripts are excluded until **Include draft scripts** is enabled. Categorie
 
 ## Playback, devices, and temporary video
 
+Above the Composer preview, choose **Output format → Portrait · 1080 × 1920** or **Landscape · 1280 × 720**. Both export at 30 fps. New sessions default to portrait; saved sessions created before this setting retain landscape with black bars.
+
+**Scaling → Fill frame (center crop)** enlarges or reduces each source proportionally until it covers the output frame, then crops the excess from the center. A landscape clip loses its sides in portrait output; a clip narrower than 9:16 loses its top and bottom. **Fit frame (black bars)** keeps the entire image visible instead. Switching output format selects Fill frame; either scaling mode can then be chosen. The preview uses the selected frame shape and scaling mode, including while switching between clips of different resolutions.
+
+Format and scaling are saved with the session and support undo/redo. Changing them preserves placements, timing and motion, pauses playback and requires **Prepare preview** again. Cropping is centered; manual crop positioning and subject tracking are not implemented. FFmpeg export accounts for display aspect ratio and rotation metadata, and writes square pixels. Low-resolution sources may appear softer when enlarged.
+
 Preview defaults to devices off. Connect a device through FunSync's **Devices** panel, then click **Prepare device sync** in Composer. The adapter reuses the configured Handy, Buttplug, TCode, or Autoblow transports. Compiled secondary axes feed the multi-axis engines. Stop, editing, leaving Composer, or a VR/Web Remote source takeover releases the Composer binding. Cloud uploads are serialized to prevent an older pending upload from replacing a newer source's script.
 
-**Render temporary video** creates a 1280×720, 30 fps H.264/AAC MP4, six same-stem scripts, and a provenance/checksum manifest. Preview and export use the same motion compiler and source-time mapping. Frame cuts are quantized to 30 fps; script times are integer milliseconds. **Play in FunSync** opens the result paused in the existing player with its axes. **Open export folder** exposes the files; **Delete render** removes that owned export while retaining your recipe and source clips. Downloads and audio caches are retained; there is no automatic disk quota yet.
+**Render temporary video** creates an H.264/AAC MP4 at the selected resolution, six same-stem scripts, and a provenance/checksum manifest recording the output settings. Preview and export use the same motion compiler and source-time mapping. Frame cuts are quantized to 30 fps; script times are integer milliseconds. **Play in FunSync** opens the result paused in the existing player with its axes. **Open export folder** exposes the files; **Delete render** removes that owned export while retaining your recipe and source clips. Downloads and audio caches are retained; there is no automatic disk quota yet.
 
 ## Current limits and next work
 
@@ -91,7 +97,7 @@ npm run test:composer:ui    # real Electron window; requires a desktop display
 npm test                   # inherited FunSync unit suite
 ```
 
-The UI test creates a disposable profile and synthetic clips, checks availability views, rating sorting, 4★+/5★ selection, saved minimums and preview invalidation, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also updates the screenshot above. It uses no account credentials or physical devices.
+The UI test creates a disposable profile and synthetic clips, checks availability views, rating sorting, 4★+/5★ selection, saved minimums and preview invalidation, analyzes a song, crosses clip boundaries, seeks while paused, saves a recipe, compiles song motion, renders an MP4, and opens it in FunSync with all axes. It also checks portrait/landscape framing, fill/fit, saved output settings, undo/redo and actual 1080×1920 export. The service tests inspect rendered pixels from landscape, square, tall portrait, native portrait, anamorphic and rotated sources to verify centered crops without stretching. The UI test updates the screenshot above. Tests use no account credentials or physical devices.
 
 - [Detailed roadmap](PLAN.md)
 - [Integration research and reusable functions](docs/REUSE_MAP.md)

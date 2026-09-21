@@ -1,4 +1,4 @@
-import { createSession, arrange, validateSession, clipRating, History, clone } from '../../packages/composer-core/index.mjs';
+import { createSession, arrange, validateSession, clipRating, History, clone, DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings } from '../../packages/composer-core/index.mjs';
 import { analyzeBeatAudio, decodeBeatAudio } from '../../vendor/motion-studio/audio-analysis.mjs';
 import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { CompositionPlayer } from './composition-player.js';
@@ -33,7 +33,8 @@ export class ComposerView {
         </aside>
         <main class="fc-main">
           <div class="fc-songbar"><div class="fc-song-title">No song loaded</div><div class="fc-actions"><select data-field="song" aria-label="Previously imported songs"><option value="">Recent songs…</option></select><button data-action="analyze">Analyze song</button></div></div>
-          <div class="fc-preview"><video muted playsinline preload="auto" hidden></video><video muted playsinline preload="auto" hidden></video><div class="fc-preview-empty">Your assembled session appears here.<br><small>The song sets the pace. Clips bring the motion.</small></div><span class="fc-preview-label">PREVIEW · DEVICES OFF</span></div>
+          <div class="fc-output-settings"><label>Output format<select data-field="output-preset">${options(OUTPUT_PRESETS.map(p=>[p.id,p.label]),DEFAULT_OUTPUT.preset)}</select></label><label>Scaling<select data-field="output-fit">${options([['cover','Fill frame (center crop)'],['contain','Fit frame (black bars)']],DEFAULT_OUTPUT.fit)}</select></label><small>30 fps · preview matches export framing</small></div>
+          <div class="fc-preview-stage"><div class="fc-preview"><video muted playsinline preload="auto" hidden></video><video muted playsinline preload="auto" hidden></video><div class="fc-preview-empty">Your assembled session appears here.<br><small>The song sets the pace. Clips bring the motion.</small></div><span class="fc-preview-label">PREVIEW · DEVICES OFF</span></div></div>
           <audio preload="auto"></audio>
           <div class="fc-transport"><button data-action="play" aria-label="Play or pause preview">▶ Play</button><button data-action="stop">Stop</button><output class="fc-time">0:00.0</output><input data-field="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Session position"><label>Volume<input data-field="volume" type="range" min="0" max="1" value="0.7" step="0.05"></label></div>
           <div class="fc-timeline"><canvas class="fc-wave" height="64" aria-label="Song energy waveform"></canvas><div class="fc-section-strip"></div><div class="fc-placement-strip"></div><canvas class="fc-motion" height="68" aria-label="Compiled motion curve"></canvas><div class="fc-playhead"></div></div>
@@ -58,6 +59,7 @@ export class ComposerView {
       if(!this.session)return;const rect=canvas.getBoundingClientRect();this.setPosition((event.clientX-rect.left)/rect.width*this.session.song.duration_ms);
     });
     this.resizeObserver=new ResizeObserver(()=>this.draw());this.resizeObserver.observe(this.root);
+    this.renderOutput();
     window.addEventListener('beforeunload',event=>{if(this.dirty){event.preventDefault();event.returnValue='';}});
   }
   ipc(action,payload){return window.funsync.composer(action,payload);}
@@ -128,7 +130,7 @@ export class ComposerView {
     }
     if(action==='render'){
       this.player.pause();this.devices.release();this.rendered=await this.job('render',{session:this.session});
-      if(this.rendered){const box=this.root.querySelector('.fc-render');box.hidden=false;box.innerHTML=`<span>Ready: ${esc(this.rendered.name)} + six motion tracks</span><button data-action="open-render">Play in FunSync</button><button data-action="folder">Open export folder</button><button data-action="delete-render">Delete render</button>`;this.message('Temporary video and scripts exported.');}return;
+      if(this.rendered){const box=this.root.querySelector('.fc-render');box.hidden=false;box.innerHTML=`<span>Ready: ${esc(this.rendered.name)} · ${this.rendered.output.width} × ${this.rendered.output.height} + six motion tracks</span><button data-action="open-render">Play in FunSync</button><button data-action="folder">Open export folder</button><button data-action="delete-render">Delete render</button>`;this.message('Temporary video and scripts exported.');}return;
     }
     if(action==='folder'){await this.ipc('export-folder',{id:this.rendered.id});return;}
     if(action==='delete-render'){
@@ -172,6 +174,10 @@ export class ComposerView {
     if(field==='song'){if(input.value&&this.discardOkay())this.newSong(this.catalog.songs.find(s=>s.id===input.value));return;}
     if(field==='saved'){
       if(!input.value||!this.discardOkay())return;const session=await this.ipc('load',{id:input.value});validateSession(session);this.analysisGeneration++;this.invalidate();this.session=session;this.revisions.set(session.id,session.revision);this.history=new History();this.selected=0;this.position=0;this.dirty=false;this.renderEditor();this.message('Session restored.');return;
+    }
+    if(field==='output-preset'||field==='output-fit'){
+      this.edit(s=>{const current=outputSettings(s);s.output=field==='output-preset'?{preset:input.value,fit:'cover'}:{preset:current.preset,fit:input.value};},{keepPlacements:true});
+      this.message('Output framing updated. Prepare preview to review the crop before rendering.');return;
     }
     if(['name','bpm','blend_ms'].includes(field)){this.edit(s=>{s[field]=field==='name'?input.value:Number(input.value);},{keepPlacements:true});return;}
     if(['source_in_ms','rate','clip_id'].includes(field)){
@@ -234,8 +240,14 @@ export class ComposerView {
         <label>Category<input data-field="tag" data-id="${esc(c.id)}" value="${esc(c.categories?.[0]||'Uncategorized')}"></label>${c.origin==='dataset'?`<button data-action="resolve" data-id="${esc(c.id)}">${ready(c)?'Verify / refresh':'Resolve video + scripts'}</button>`:''}</article>`;
     }).join('')||`<p class="fc-empty">${!this.catalog.clips.length?'Add your downloaded clip folder, or sync the dataset to browse script variants.':view==='used'?'No used clips match. Assemble a session or clear the search.':'No clips match. Lower the minimum rating, change the view, or clear the search.'}</p>`;
   }
+  renderOutput(){
+    const output=outputSettings(this.session||{output:DEFAULT_OUTPUT});
+    for(const key of ['preset','fit']){const input=this.root.querySelector(`[data-field=output-${key}]`);input.value=output[key];input.disabled=!this.session;}
+    this.root.querySelector('.fc-preview-stage').style.setProperty('--fc-output-ratio',output.width/output.height);
+    for(const video of this.root.querySelectorAll('.fc-preview video'))video.style.objectFit=output.fit;
+  }
   renderEditor(){
-    this.renderLibrary();const s=this.session;if(!s)return;
+    this.renderLibrary();this.renderOutput();const s=this.session;if(!s)return;
     this.selected=Math.min(this.selected,s.sections.length-1);
     this.root.querySelector('.fc-song-title').textContent=`${s.name} · ${stamp(s.song.duration_ms)}`;
     this.root.querySelector('[data-field=seek]').max=s.song.duration_ms;

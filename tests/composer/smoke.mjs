@@ -14,8 +14,8 @@ const userData=path.join(root,'profile'),library=path.join(root,'clips','Pulse')
 const service=await new ComposerService(path.join(userData,'composer')).init();
 const signal=new AbortController().signal;let app;
 try{
-  for(const [name,color] of [['A','teal'],['B','purple'],['C','gray']]){
-    await service.run('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${color}:s=320x180:r=30:d=2`,'-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',path.join(library,`${name}.mp4`)],signal);
+  for(const [name,color,size] of [['A','teal','320x180'],['B','purple','180x320'],['C','gray','160x160']]){
+    await service.run('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${color}:s=${size}:r=30:d=2`,'-vf','drawbox=x=(iw-50)/2:y=(ih-50)/2:w=50:h=50:color=white:t=fill','-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',path.join(library,`${name}.mp4`)],signal);
     if(name!=='C')await fs.writeFile(path.join(library,`${name}.funscript`),JSON.stringify({actions:Array.from({length:9},(_,i)=>({at:i*250,pos:i%2?90:10}))}));
   }
   await service.run('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=220:duration=6','-af',"volume='0.5+0.5*sin(4*PI*t)':eval=frame",path.join(root,'Preview song.wav')],signal);
@@ -48,6 +48,11 @@ try{
   await page.locator('[data-field=library-view]').selectOption('ready');
   await page.locator('#composer-container [data-field=song]').selectOption(song.id);
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
+  assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080');
+  const framing=()=>{const root=document.querySelector('#composer-container'),frame=root.querySelector('.fc-preview').getBoundingClientRect(),stage=root.querySelector('.fc-preview-stage').getBoundingClientRect();return {ratio:frame.width/frame.height,inside:frame.width<=stage.width&&frame.height<=stage.height+1,fits:[...root.querySelectorAll('.fc-preview video')].map(v=>getComputedStyle(v).objectFit)};};
+  let frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-9/16)<.005&&frame.inside);assert.deepEqual(frame.fits,['cover','cover']);
+  await page.setViewportSize({width:700,height:1000});frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-9/16)<.005&&frame.inside,'portrait framing stays correct on narrow screens');
+  await page.setViewportSize({width:1500,height:1080});
   await page.locator('[data-action=analyze]').click({force:true});
   await until(()=>!!window.app.composer.session.analysis,{timeout:20000});
   await page.locator('[data-action=assemble]').click({force:true});
@@ -64,6 +69,16 @@ try{
   await until(()=>!window.app.composer.player.aligning);
   const clocks=await page.evaluate(()=>{const p=window.app.composer.player;return {audio:p.audio.currentTime,video:p.videos[p.active].currentTime,start:p.current.start_ms,paused:p.audio.paused};});
   assert.ok(Math.abs(clocks.video-(clocks.audio-clocks.start/1000))<.08);assert.ok(clocks.paused);
+  const placements=await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements));
+  await page.locator('[data-field=output-preset]').selectOption('landscape-720');
+  assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'format changes invalidate preview');
+  frame=await page.evaluate(framing);assert.ok(Math.abs(frame.ratio-16/9)<.005&&frame.inside);
+  await page.locator('[data-field=output-fit]').selectOption('contain');assert.deepEqual((await page.evaluate(framing)).fits,['contain','contain']);
+  await page.locator('[data-action=undo]').click({force:true});assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'cover');
+  await page.locator('[data-action=redo]').click({force:true});assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'contain');
+  await page.locator('[data-field=output-preset]').selectOption('portrait-1080');assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'cover');
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session.placements)),placements,'framing edits preserve the timeline');
+  await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===1);
   await page.locator('[data-field=min_rating]').selectOption('5');
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null,'raising minimum invalidates preview');
@@ -72,7 +87,7 @@ try{
   await page.locator('[data-action=prepare]').click({force:true});await until(()=>!window.app.composer.preparing&&document.querySelector('[data-status]').textContent.includes('below the 5★ minimum'));
   assert.equal(await page.evaluate(()=>window.app.composer.prepared),null);
   const lowPlacement=await page.evaluate(()=>{const c=window.app.composer;return c.session.placements.find(p=>c.catalog.clips.find(clip=>clip.id===p.clip_id).user_rating===4).id;});
-  await page.locator(`[data-placement="${lowPlacement}"]`).click({force:true});
+  await page.locator(`.fc-placement-strip button[data-placement="${lowPlacement}"]`).click({force:true});
   assert.equal(await page.locator('[data-field=clip_id] option:checked').getAttribute('disabled'),'');
   assert.equal(await page.locator('[data-field=clip_id] option:not(:disabled)').count(),1);
   await page.locator('[data-action=assemble]').click({force:true});
@@ -81,8 +96,11 @@ try{
   await page.locator('[data-action=save]').click({force:true});await until(()=>window.app.composer.session.revision===2&&!window.app.composer.dirty);
   const sessionId=await page.evaluate(()=>window.app.composer.session.id);
   await page.locator('[data-field=min_rating]').selectOption('4');
+  await page.locator('[data-field=output-preset]').selectOption('landscape-720');
   await page.locator('[data-field=saved]').selectOption(sessionId);await until(()=>window.app.composer.session.min_rating===5);
   assert.equal(await page.locator('[data-field=min_rating]').inputValue(),'5','saved minimum restored');
+  assert.equal(await page.locator('[data-field=output-preset]').inputValue(),'portrait-1080','saved format restored');
+  assert.equal(await page.locator('[data-field=output-fit]').inputValue(),'cover');
   await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   await page.locator(`[data-field=rating][data-id="${ids['B.mp4']}"]`).selectOption('4');
   await until(()=>window.app.composer.catalog.clips.find(c=>c.name==='B.mp4').user_rating===4);
@@ -107,11 +125,15 @@ try{
   await page.locator('[data-action=prepare]').click({force:true});await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing);
   assert.ok(await page.evaluate(()=>window.app.composer.prepared.snapshot.blocks.some(b=>b.kind==='song')));
   await page.locator('[data-action=render]').click({force:true});await until(()=>!!window.app.composer.rendered,{timeout:45000});
+  const rendered=await page.evaluate(()=>window.app.composer.rendered);const info=await service.probe(rendered.path,signal);
+  assert.equal(info.width,1080);assert.equal(info.height,1920);assert.equal(rendered.output.fit,'cover');
+  console.log('PASS: portrait/landscape preview geometry, fill/fit modes, undo/redo, saved format, mixed source playback and real 1080×1920 export.');
   await page.setViewportSize({width:1500,height:1280});
   await page.evaluate(()=>document.getElementById('composer-container').scrollTop=0);
   await page.screenshot({path:path.join(checkout,'docs','composer-implemented.png'),fullPage:true});
   await page.locator('[data-action=open-render]').click({force:true});
   await until(()=>window.app._currentView()==='player'&&window.app.funscriptEngine.isLoaded&&window.app.buttplugSync._axisActions.size===5);
+  await until(()=>window.app.videoPlayer.video.videoWidth===1080&&window.app.videoPlayer.video.videoHeight===1920);
   assert.equal(await page.evaluate(()=>window.app.videoPlayer.paused),true);
   assert.equal(await page.evaluate(()=>window.app.tcodeSync._axisActions.size),5);
   const backend=await page.evaluate(async()=>{const before=await window.funsync.getBackendPort(),result=await window.funsync.restartBackend();return {before,after:await window.funsync.getBackendPort(),result};});

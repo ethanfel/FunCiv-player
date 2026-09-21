@@ -1,6 +1,8 @@
 import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { spliceActions } from '../../vendor/motion-studio/timeline.mjs';
 import { generateBeatSection } from '../../vendor/motion-studio/audio-patterns.mjs';
+import { DEFAULT_OUTPUT, outputSettings } from './output.mjs';
+export { DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings } from './output.mjs';
 
 export const SCHEMA = 'funciv-session/1';
 export const AXES = ['L0', 'L1', 'L2', 'R0', 'R1', 'R2'];
@@ -35,7 +37,7 @@ export function createSession(song, count = 6) {
   if (duration < 1000) throw new Error('Choose a song at least one second long.');
   count = Math.max(1, Math.min(Math.floor(count), Math.floor(duration / 1000)));
   return { schema: SCHEMA, id: crypto.randomUUID(), revision: 0, name: song.name.replace(/\.[^.]+$/, ''),
-    song: clone(song), seed: 1, blend_ms: 150, min_rating: 0, analysis: null, placements: [],
+    song: clone(song), seed: 1, blend_ms: 150, min_rating: 0, output:clone(DEFAULT_OUTPUT), analysis: null, placements: [],
     sections: Array.from({ length: count }, (_, i) => ({ id: crypto.randomUUID(), label: `Section ${i + 1}`,
       start_ms: Math.round(duration * i / count), end_ms: Math.round(duration * (i + 1) / count),
       category: '*', motion: 'clip', strength: 100, locked: false, gaps: [] })) };
@@ -58,6 +60,7 @@ export function validateSession(session, clips = null) {
   if (session.bpm !== undefined && (!Number.isFinite(session.bpm) || session.bpm < 30 || session.bpm > 300)) throw new Error('BPM must be between 30 and 300.');
   if (!Number.isInteger(session.seed) || !Number.isInteger(session.revision) || session.revision < 0) throw new Error('Invalid seed or revision.');
   if (session.min_rating !== undefined && !validRating(session.min_rating)) throw new Error('Minimum rating must be an integer from 0 to 5.');
+  outputSettings(session);
   const byId = clips && new Map(clips.map(c => [c.id, c]));
   const ids = new Set();
   for (const p of session.placements || []) {
@@ -171,7 +174,7 @@ export function compile(session, clips) {
     validateActions(tracks[axis]);
   }
   return { schema:'funciv-playback/1', session_id:session.id, revision:session.revision, duration_ms:duration,
-    song:clone(session.song), placements:clone(session.placements), sections:clone(session.sections),
+    song:clone(session.song), output:outputSettings(session), placements:clone(session.placements), sections:clone(session.sections),
     scripts:Object.fromEntries(AXES.map(axis => [axis,{version:'1.0',inverted:false,range:100,actions:tracks[axis],
       metadata:{title:session.name,creator:'FunCiv Player',chapters:session.sections.map(s=>({name:s.label,startTime:s.start_ms,endTime:s.end_ms}))}}])),
     warnings:[...new Set(warnings)], blocks };
