@@ -10,9 +10,11 @@ import { ComposerService } from '../../electron/composer-service.cjs';
 import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary, checkLibraryReadiness } from './timeline-ui.mjs';
 import { checkSectionHandles, checkPopulatedSectionHandle } from './section-ui.mjs';
 import { checkDraftAssembly } from './assembly-ui.mjs';
+import { checkSaveDuringEditing, checkSourceDragEscape } from './editor-regressions-ui.mjs';
 
 const checkout=fileURLToPath(new URL('../..',import.meta.url));
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-electron-'));
+const screenshots=process.env.FUNCIV_SMOKE_SCREENSHOTS||path.join(root,'screenshots');await fs.mkdir(screenshots,{recursive:true});
 const userData=path.join(root,'profile'),library=path.join(root,'clips','Pulse');await fs.mkdir(library,{recursive:true});
 const service=await new ComposerService(path.join(userData,'composer')).init();
 const signal=new AbortController().signal;let app;
@@ -28,7 +30,7 @@ try{
   service.catalog.clips.push({...structuredClone(service.catalog.clips.find(c=>c.name==='A.mp4')),id:'synthetic-draft',name:'Draft fixture',origin:'dataset',quality:5,review_status:'draft',audio_sync:true,categories:['Draft','Alternate'],dataset_categories:['Draft','Alternate'],automatic_categories:['Draft','Alternate'],category_paths:['Season/Draft','Season/Alternate'],commit:'a'.repeat(40),variant_id:'b'.repeat(64)});
   service.catalog.clips.push({id:'synthetic-unrated-draft',name:'Unrated draft fixture',origin:'dataset',quality:0,review_status:'draft',available:false,duration_ms:2000,categories:['Draft']});
   await service.saveCatalog();
-  app=await electron.launch({args:['--no-sandbox','--disable-gpu','--disable-frame-rate-limit','--disable-gpu-vsync',checkout],env:{...process.env,FUNCIV_USER_DATA:userData,CIVITAI_API_TOKEN:''},timeout:45000});
+  app=await electron.launch({args:['--no-sandbox',...(process.platform==='linux'?['--ozone-platform=x11']:[]),'--disable-gpu','--disable-frame-rate-limit','--disable-gpu-vsync',checkout],env:{...process.env,FUNCIV_USER_DATA:userData,CIVITAI_API_TOKEN:''},timeout:45000});
   const page=app.windows().find(p=>p.url().includes('index.html'))||await app.waitForEvent('window',{predicate:page=>page.url().includes('index.html'),timeout:30000}).catch(async()=>app.windows().find(p=>p.url().includes('index.html')));
   assert.ok(page,'main window opens');await page.setViewportSize({width:1500,height:1080});
   const until=async(fn,{timeout=30000}={})=>{const end=Date.now()+timeout;while(Date.now()<end){if(await page.evaluate(fn))return;await new Promise(r=>setTimeout(r,100));}throw new Error('Timed out: '+fn.toString());};
@@ -81,7 +83,7 @@ try{
   await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
   assert.equal(await page.locator('.fc-folder-dialog input[value=Alternate]').count(),1,'HF category labels appear in the song-section folder picker');
   await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
-  await checkLibraryReadiness(page,path.join(checkout,'docs','composer-folder-readiness.png'));
+  await checkLibraryReadiness(page,path.join(screenshots,'composer-folder-readiness.png'));
   await checkDraftAssembly(page,until);
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'song');
@@ -194,6 +196,7 @@ try{
   await page.locator('.fc-section-row[data-section="0"] [data-action=select-section]').click({force:true});
   await chooseSectionFolders(page);
   await checkPopulatedSectionHandle(page);
+  await checkSaveDuringEditing(page,until);
   const untouched=await page.evaluate(()=>{const s=window.app.composer.session;return s.placements.filter(p=>p.section_id!==s.sections[0].id).map(p=>p.id);});
   await page.evaluate(()=>window.app.composer.setPosition(200));await page.locator('[data-action=mark-in]').click({force:true});
   await page.evaluate(()=>window.app.composer.setPosition(800));await page.locator('[data-action=mark-out]').click({force:true});
@@ -221,6 +224,7 @@ try{
   await page.mouse.move(sourceBox.x+sourceBox.width/2,sourceBox.y+sourceBox.height/2);await page.mouse.down();await page.mouse.move(sourceBox.x+sourceBox.width/2+sourceWidth*.2,sourceBox.y+sourceBox.height/2,{steps:5});await page.mouse.up();
   const trimmed=await page.evaluate(()=>{const c=window.app.composer;return c.session.placements.find(p=>p.id===c.selectedPlacement);});
   assert.ok(Math.abs(trimmed.source_in_ms-500)<=2);assert.equal(trimmed.end_ms,afterRoll.end_ms);assert.equal(trimmed.locked,true);
+  await checkSourceDragEscape(page);
   await page.locator('[data-action=variation]').click({force:true});
   assert.deepEqual(await page.evaluate(id=>window.app.composer.session.placements.find(p=>p.id===id),middle),trimmed);
   await page.locator('.fc-section-row[data-section="1"] [data-action=select-section]').click({force:true});await page.locator('[data-action=merge]').click({force:true});
@@ -249,7 +253,7 @@ try{
   await page.setViewportSize({width:1500,height:1600});
   await page.evaluate(()=>document.getElementById('composer-container').scrollTop=0);
   await page.locator('.fc-library-filters').evaluate(el=>el.open=false);
-  await page.screenshot({path:path.join(checkout,'docs','composer-implemented.png'),fullPage:true});
+  await page.screenshot({path:path.join(screenshots,'composer-implemented.png'),fullPage:true});
   await page.locator('[data-action=open-render]').click({force:true});
   await until(()=>window.app._currentView()==='player'&&window.app.funscriptEngine.isLoaded&&window.app.buttplugSync._axisActions.size===5);
   await until(()=>window.app.videoPlayer.video.videoWidth===1080&&window.app.videoPlayer.video.videoHeight===1920);
@@ -325,7 +329,7 @@ try{
   await checkLargeLibrary(page);
   await page.evaluate(()=>document.getElementById('composer-container').scrollTop=0);
   const libraryBounds=await page.locator('.fc-library').boundingBox();
-  await page.screenshot({path:path.join(checkout,'docs','composer-library.png'),clip:libraryBounds});
+  await page.screenshot({path:path.join(screenshots,'composer-library.png'),clip:libraryBounds});
   assert.deepEqual(errors,[]);
   console.log('PASS: actual Electron launch, song analysis, assembly, clip switching, pause/seek, recipe save, song motion, FFmpeg export, and six-axis FunSync playback handoff.');
 }catch(error){console.error(error.message);if(app){for(const page of app.windows())if(page.url().includes('index.html')){console.error(await page.evaluate(()=>({ready:document.readyState,nav:!!window.app?.navBar,navElement:!!window.app?.navBar?._el,status:document.querySelector('[data-status]')?.textContent,view:window.app?._currentView(),body:document.body.innerText.slice(0,1500)})));await page.screenshot({path:path.join(root,'failure.png')}).catch(()=>{});}}throw error;}

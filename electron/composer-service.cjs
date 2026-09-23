@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createHash, randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { spawn } = require('node:child_process');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -13,6 +14,10 @@ const VIDEO = new Set(['.mp4','.mkv','.webm','.mov','.m4v','.avi']);
 const REPO = 'ethanfel/FunCiv-Data';
 const hash = data => createHash('sha256').update(data).digest('hex');
 const core = () => import('../packages/composer-core/index.mjs');
+// Script bytes are immutable by checksum; a repository commit also changes
+// for unrelated uploads and category edits and is not an asset identity.
+const scriptDescriptors = scripts => Object.fromEntries(Object.keys(scripts||{}).filter(axis=>Object.hasOwn(AXES,axis)).sort().map(axis=>[axis,scripts[axis].sha256]));
+const sameDescriptors = (a,b) => !!a&&!!b&&JSON.stringify(scriptDescriptors(a))===JSON.stringify(scriptDescriptors(b));
 
 function categoryList(value,field,maxLength){
   if(value===undefined)return [];
@@ -103,6 +108,7 @@ class ComposerService {
     const old=this.catalog.clips.filter(c=>c.root===root);for(const c of old)if(!found.some(f=>f.id===c.id))c.available=false;
     this.catalog.clips=this.catalog.clips.filter(c=>!found.some(f=>f.id===c.id)).concat(found);
     if(!this.catalog.roots.includes(root))this.catalog.roots.push(root);
+    (this.catalog.root_status||={})[root]={available:true};
     const linked=await this.linkLocalClips(this.catalog.clips,signal);
     await this.saveCatalog();return {count:found.length,linked,warnings};
   }
@@ -111,7 +117,12 @@ class ComposerService {
     for(const root of this.catalog.roots){
       signal?.throwIfAborted();
       try{const result=await this.scan(root,signal,update);count+=result.count;warnings.push(...result.warnings);}
-      catch(e){if(signal?.aborted)throw e;warnings.push(`${root}: ${e.message}`);}
+      catch(e){
+        if(signal?.aborted)throw e;
+        for(const clip of this.catalog.clips)if(clip.origin!=='dataset'&&clip.root===root)clip.available=false;
+        (this.catalog.root_status||={})[root]={available:false,error:e.message};
+        warnings.push(`${root}: ${e.message}`);
+      }
     }
     const linked=await this.linkLocalClips(this.catalog.clips,signal);await this.saveCatalog();
     return {count,linked,warnings};
@@ -123,7 +134,7 @@ class ComposerService {
       signal?.throwIfAborted();
       const candidates=locals.filter(c=>c.civitai_id===clip.civitai_id&&Math.abs(c.duration_ms-clip.duration_ms)<150);
       const currentLocal=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.path===clip.path);
-      const current=candidates.find(c=>c.path===clip.path)||(!currentLocal&&!clip.local_video_id&&clip.path?clip:null);
+      const current=candidates.find(c=>c.path===clip.path)||(!currentLocal&&clip.path?clip:null);
       let video=null;
       for(const candidate of [...new Set([current,...candidates].filter(Boolean))]){
         try{const stat=await fs.stat(candidate.path);if(stat.isFile()&&stat.size===candidate.size&&stat.mtimeMs===candidate.mtime){video=candidate;break;}}catch{}
@@ -132,8 +143,8 @@ class ComposerService {
       if(!video)continue;
       Object.assign(clip,{path:video.path,url:video.url,size:video.size,mtime:video.mtime,width:video.width,height:video.height});
       const local=candidates.find(c=>c.path===video.path);
-      if(!local)continue;
-      clip.local_video_id=local.id;linked++;
+      if(!local){delete clip.local_video_id;clip.video_source='cache';continue;}
+      clip.local_video_id=local.id;clip.video_source='library';linked++;
       if(!clip.dataset_categories?.length){clip.automatic_categories=[...local.categories];if(!clip.manual_categories)clip.categories=[...local.categories];}
       // A filename and matching duration identify the video, not the script variant.
       // Reuse sidecars only if every published axis has the exact HF checksum.
@@ -211,6 +222,8 @@ class ComposerService {
     for(const row of rows){
       if(!/^[1-9]\d{0,15}$/.test(row.civitai_id)||!/^[a-f0-9]{64}$/.test(row.variant_id)||!Number.isFinite(row.duration_ms)||row.duration_ms<=0)throw new Error('Invalid dataset row.');
       if(row.audio_sync!==undefined&&typeof row.audio_sync!=='boolean')throw new Error('Invalid dataset audio sync label.');
+      if(row.intensity!==undefined&&(!Number.isInteger(row.intensity)||row.intensity<0||row.intensity>5))throw new Error('Invalid dataset intensity: expected an integer from 0 to 5.');
+      if(row.intensity_mode!==undefined&&!['manual','auto'].includes(row.intensity_mode))throw new Error('Invalid dataset intensity mode.');
       const id=`hf-${row.civitai_id}-${row.variant_id.slice(0,20)}`,existing=this.catalog.clips.find(c=>c.id===id);
       const local=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
       const datasetCategories=categoryList(row.categories,'categories',160),categoryPaths=categoryList(row.category_paths,'category paths',4096);
@@ -220,13 +233,17 @@ class ComposerService {
         duration_ms:row.duration_ms,categories:existing?.manual_categories?[...existing.categories]:[...automaticCategories],manual_categories:existing?.manual_categories===true,
         dataset_categories:datasetCategories,category_paths:categoryPaths,automatic_categories:[...automaticCategories],
         audio_sync:row.audio_sync===true,
+        intensity:row.intensity??0,intensity_mode:row.intensity_mode??'manual',
         review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
-        preferred:row.preferred,origin:'dataset',commit:info.sha,remote_scripts:row.scripts,
-        // An earlier prepared binding remains tied to its revision; fetching a new catalog doesn't replace saved sessions.
-        scripts:existing?.commit===info.sha?existing.scripts:undefined,binding:'duration-compatible'});
+        preferred:row.preferred,origin:'dataset',retired:false,commit:info.sha,remote_scripts:row.scripts,
+        scripts:sameDescriptors(existing?.remote_scripts,row.scripts)?existing.scripts:undefined,binding:'duration-compatible'});
     }
-    await this.linkLocalClips(incoming,signal);
-    this.catalog.clips=this.catalog.clips.filter(c=>c.origin!=='dataset').concat(incoming);
+    // Keep old variants addressable for saved and currently open recipes.
+    // They retain their original HF commit, so uncached scripts can still be fetched.
+    const incomingIds=new Set(incoming.map(c=>c.id));
+    const retired=this.catalog.clips.filter(c=>c.origin==='dataset'&&!incomingIds.has(c.id)).map(c=>({...c,retired:true}));
+    await this.linkLocalClips([...incoming,...retired],signal);
+    this.catalog.clips=this.catalog.clips.filter(c=>c.origin!=='dataset').concat(incoming,retired);
     this.catalog.dataset={repo:REPO,commit:info.sha,count:incoming.length,
       review_policy:['all-drafts','folder-approval'].includes(manifest.review_policy)?manifest.review_policy:null,
       review_counts:{draft:incoming.filter(c=>c.review_status==='draft').length,approved:incoming.filter(c=>c.review_status==='approved').length},
@@ -269,15 +286,25 @@ class ComposerService {
     const info=await this.probe(file,signal);if(!info.video||Math.abs(info.duration_ms-clip.duration_ms)>150)throw new Error('Video duration differs from this script variant. Choose a different local copy.');
     const stat=await fs.stat(file);
     Object.assign(clip,{path:file,url:pathToFileURL(file).href,available:true,scripts,binding:'duration-compatible',size:stat.size,mtime:stat.mtimeMs});
+    const local=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.path===file);
+    if(local){clip.local_video_id=local.id;clip.video_source='library';}
+    else{delete clip.local_video_id;clip.video_source='cache';}
     await this.saveCatalog();return {id:clip.id,axes:Object.keys(scripts),binding:clip.binding};
   }
   async sessionList(){const dir=path.join(this.root,'sessions');await fs.mkdir(dir,{recursive:true});const result=[];for(const name of await fs.readdir(dir)){if(!name.endsWith('.json'))continue;try{const s=await readJSON(path.join(dir,name));result.push({id:s.id,name:s.name,revision:s.revision});}catch{}}return result;}
   sessionPath(id){if(!/^[\w-]{1,80}$/.test(id))throw new Error('Invalid session ID.');return path.join(this.root,'sessions',id+'.json');}
   saveSession(session){
+    session=structuredClone(session);
     const operation=async()=>{const {validateSession}=await core();validateSession(session);const file=this.sessionPath(session.id),old=await readJSON(file,null);
       if(old&&old.revision!==session.revision)throw new Error('A newer saved session exists. Reopen it before saving.');
       const next={...session,revision:session.revision+1};
-      if(session.placements.length)next.asset_bindings=this.bindings(await this.clipsForSession({...session,placements:session.placements.filter(p=>p.clip_id)}));
+      // Saving preserves an editable recipe, even with offline or unresolved
+      // media. Only playback/export require live file and script validation.
+      const ids=[...new Set(session.placements.map(p=>p.clip_id).filter(Boolean))];
+      const known=this.bindings(this.catalog.clips.filter(c=>ids.includes(c.id)));
+      next.asset_bindings=Object.fromEntries(ids.flatMap(id=>{
+        const binding=session.asset_bindings?.[id]||known[id];return binding?[[id,binding]]:[];
+      }));
       await atomic(file,next);return next;};
     this.sessionSaving=(this.sessionSaving||Promise.resolve()).catch(()=>{}).then(operation);return this.sessionSaving;
   }
@@ -290,12 +317,28 @@ class ComposerService {
         const file=c.path.slice(0,-path.extname(c.path).length)+AXES[axis]+'.funscript';
         if(hash(JSON.stringify(await readJSON(file)))!==hash(JSON.stringify(script)))throw new Error(`${c.name} motion changed. Rescan before playback.`);
       }
-      const binding=this.bindings([c])[c.id];
-      if(session.asset_bindings?.[id]&&JSON.stringify(session.asset_bindings[id])!==JSON.stringify(binding))throw new Error(`${c.name} differs from the saved session. Reassemble to adopt the updated asset.`);
+      if(session.asset_bindings?.[id]&&!this.bindingMatches(session.asset_bindings[id],c))throw new Error(`${c.name} differs from the saved session. Reassemble to adopt the updated asset.`);
       clips.push(structuredClone(c));}
     return clips;
   }
-  bindings(clips){return Object.fromEntries(clips.map(c=>[c.id,{commit:c.commit||null,variant:c.variant_id||null,size:c.size,mtime:c.mtime,scripts:hash(JSON.stringify(c.scripts||{})),...(c.audio_sync===true?{audio_sync:true}:{})}]));}
+  bindings(clips){return Object.fromEntries(clips.map(c=>[c.id,{version:2,variant:c.variant_id||null,
+    ...(Number.isFinite(c.size)&&Number.isFinite(c.mtime)?{size:c.size,mtime:c.mtime}:{}),
+    ...(c.origin==='dataset'&&c.remote_scripts?{script_hashes:scriptDescriptors(c.remote_scripts)}:{scripts:hash(JSON.stringify(c.scripts||{}))}),
+    ...(c.audio_sync===true?{audio_sync:true}:{})}]));}
+  bindingMatches(expected,clip){
+    const actual=this.bindings([clip])[clip.id];
+    if(expected.version===2){
+      const normalized={...actual};
+      // A recipe saved before video resolution has no file stats to pin yet.
+      if(expected.size===undefined&&expected.mtime===undefined){delete normalized.size;delete normalized.mtime;}
+      return isDeepStrictEqual(expected,normalized);
+    }
+    // Legacy recipes pin decoded script content. Keep that check while
+    // permitting an unrelated repository commit to advance.
+    const {commit,...legacy}=expected;
+    const current={variant:clip.variant_id||null,size:clip.size,mtime:clip.mtime,scripts:hash(JSON.stringify(clip.scripts||{})),...(clip.audio_sync===true?{audio_sync:true}:{})};
+    return isDeepStrictEqual(legacy,current);
+  }
   async prepare(session){
     if(session.placements?.some(p=>!p.clip_id))throw new Error('Some clip regions are empty. Assemble or assign a clip to each region before playback.');
     const song=this.catalog.songs.find(s=>s.id===session.song?.id);

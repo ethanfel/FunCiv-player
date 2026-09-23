@@ -11,9 +11,11 @@ export class RegionEditor {
     this.view=view;this.root=view.root;
     this.root.addEventListener('pointerdown',event=>this.beginDrag(event));
     this.root.addEventListener('pointermove',event=>this.moveDrag(event));
-    this.root.addEventListener('pointerup',()=>this.finishDrag());
-    this.root.addEventListener('pointercancel',()=>this.finishDrag(true));
-    this.root.addEventListener('keydown',event=>{if(event.key==='Escape'&&this.drag){event.preventDefault();this.finishDrag(true);}});
+    this.root.addEventListener('pointerup',event=>{if(this.drag?.pointer===event.pointerId)this.finishDrag();});
+    for(const name of ['pointercancel','lostpointercapture'])this.root.addEventListener(name,event=>{if(this.drag?.pointer===event.pointerId)this.finishDrag(true);});
+    const window=this.root.ownerDocument.defaultView;
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&this.drag){event.preventDefault();this.finishDrag(true);}},true);
+    window.addEventListener('blur',()=>this.finishDrag(true));
   }
   commit(next){this.suggestion=null;this.view.edit(s=>Object.assign(s,next),{keepPlacements:true});}
   selected(){return this.view.session?.placements.find(p=>p.id===this.view.selectedPlacement);}
@@ -82,12 +84,12 @@ export class RegionEditor {
   folders(id){
     const v=this.view,session=v.session,section=session?.sections.find(s=>s.id===id);if(!section)throw new Error('Load a song and select a section.');
     v.selectSection(session.sections.indexOf(section));
-    const selected=new Set(sectionCategories(section)),categories=[...new Set(v.catalog.clips.flatMap(c=>c.categories||[]).concat([...selected]))].sort();
+    const selected=new Set(sectionCategories(section)),catalog=v.catalog.clips.filter(c=>!c.retired),categories=[...new Set(catalog.flatMap(c=>c.categories||[]).concat([...selected]))].sort();
     const dialog=document.createElement('dialog');dialog.className='fc-dialog fc-folder-dialog';
     dialog.innerHTML=`<form method="dialog"><h2>Folders for ${esc(section.label)}</h2><p>This is a full song section. Its clips may come from any category you check.</p>
       <div class="fc-folder-help"><strong>${v.catalog.roots?.length?`${v.catalog.roots.length} local folder${v.catalog.roots.length===1?'':'s'} indexed`:'No local folder indexed'}</strong><p>“Video not linked” means the app has no local match yet. If your videos are already on disk, index their folder to connect them to HF.</p><button value="index">Index local folder…</button><small>Session filters: ${v.minimumRating()?v.minimumRating()+'★ or higher':'all ratings'} · drafts ${v.includeDrafts?'included':'excluded'}. Ready counts use this section’s motion setting.</small></div>
       <label class="fc-check"><input name="any" type="checkbox" ${selected.size?'':'checked'}> Any folder / category</label><div class="fc-folder-choices">${categories.map(category=>{
-      const status=folderReadiness(v.catalog.clips.filter(c=>c.categories?.includes(category)),session,section);
+      const status=folderReadiness(catalog.filter(c=>c.categories?.includes(category)),session,section);
       return `<label class="fc-check"><input name="category" value="${esc(category)}" type="checkbox" ${selected.has(category)?'checked':''}><span>${esc(category)}<small>${status.ready} ready · ${status.total} catalog clips</small>${status.reasons.length?`<small class="fc-folder-reasons">${esc(status.reasons.join(' · '))}</small>`:''}</span></label>`;
     }).join('')||'<p>Add a local folder or sync the dataset to get categories.</p>'}</div><p>Several reasons can apply to one clip. Use Library → Filters for ratings/drafts, or Get HF scripts for linked videos. HF categories and your folder choices are kept when files are linked.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="apply" class="fc-primary">Apply folders</button></div></form>`;
     dialog.addEventListener('change',event=>{
@@ -118,7 +120,7 @@ export class RegionEditor {
     const v=this.view,s=v.session,p=this.selected();if(!p)return '<p>Select a clip region to edit its timing and source portion.</p>';
     const section=s.sections.find(s=>s.id===p.section_id),regions=sectionRegions(s,section),index=regions.indexOf(p),clip=v.catalog.clips.find(c=>c.id===p.clip_id);
     const required=(p.end_ms-p.start_ms)*p.rate;
-    const choices=v.catalog.clips.filter(c=>c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&allowsClipReview(v.session,c)&&c.duration_ms>=required&&hasMotionForSection(c,section));
+    const choices=v.catalog.clips.filter(c=>!c.retired&&c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&allowsClipReview(v.session,c)&&c.duration_ms>=required&&hasMotionForSection(c,section));
     const current=p.clip_id&&!choices.some(c=>c.id===p.clip_id)?`<option value="${esc(p.clip_id)}" selected disabled>Current: ${esc(clip?.name||'Missing clip')} (outside filters)</option>`:'';
     const max=clip?Math.max(0,clip.duration_ms-required):0;
     return `<h3>Selected clip region</h3><label>Song start (seconds)<input data-field="region-start" type="number" step="0.001" value="${time(p.start_ms)}" ${index===0?'disabled':''}></label><label>Song end (seconds)<input data-field="region-end" type="number" step="0.001" value="${time(p.end_ms)}" ${index===regions.length-1?'disabled':''}></label><small>Drag a region edge to move the shared cut. Neighbors stay joined.</small>
@@ -135,7 +137,7 @@ export class RegionEditor {
   }
   pauseSource(){this.root.querySelector('[data-source-preview]')?.pause();}
   beginDrag(event){
-    const edge=event.target.closest('[data-region-edge]'),source=event.target.closest('[data-source-drag]');if((!edge&&!source)||event.button!==0||event.target.disabled||this.view.sectionEditor.drag)return;
+    const edge=event.target.closest('[data-region-edge]'),source=event.target.closest('[data-source-drag]');if((!edge&&!source)||event.button!==0||event.target.disabled||this.drag||this.view.sectionEditor.drag||this.view.timeline?.drag)return;
     const v=this.view,id=edge?.dataset.regionId||source.dataset.sourceDrag,p=v.session?.placements.find(p=>p.id===id);if(!p)return;
     event.preventDefault();this.pauseSource();v.invalidate();v.inspectorMode='clip';v.selectedPlacement=id;v.selected=v.session.sections.findIndex(s=>s.id===p.section_id);
     const rect=(edge?this.root.querySelector('.fc-placement-strip'):this.root.querySelector('.fc-source-rail')).getBoundingClientRect();

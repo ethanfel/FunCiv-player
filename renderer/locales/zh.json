@@ -122,6 +122,7 @@
     "popoutWindowTitle": "观众房间"
   },
   "nav": {
+    "composer": "编排器",
     "library": "媒体库",
     "playlists": "播放列表",
     "categories": "分类",
@@ -1320,6 +1321,7 @@
       "error": "错误"
     },
     "source": {
+      "composer": "编排器",
       "web-remote": "网页遥控",
       "vr": "VR 伴随程序"
     },

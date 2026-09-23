@@ -122,6 +122,7 @@
     "popoutWindowTitle": "オーディエンスルーム"
   },
   "nav": {
+    "composer": "コンポーザー",
     "library": "ライブラリ",
     "playlists": "プレイリスト",
     "categories": "カテゴリ",
@@ -1320,6 +1321,7 @@
       "error": "エラー"
     },
     "source": {
+      "composer": "コンポーザー",
       "web-remote": "ウェブリモート",
       "vr": "VR コンパニオン"
     },

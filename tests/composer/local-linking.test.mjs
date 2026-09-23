@@ -54,7 +54,7 @@ test('scanning before or after HF sync links local videos and only exact script 
   const before=calls.length;const missing=await service.fetchLocalScripts([id],signal);assert.equal(missing.count,0);assert.equal(missing.warnings.length,1);assert.equal(calls.length,before);
   await service.run('ffmpeg',['-v','error','-f','lavfi','-i','color=c=gray:s=160x90:r=30:d=2','-an','-c:v','libx264','-pix_fmt','yuv420p','-threads','1',moved],signal);
   await service.scan(library,signal);assert.equal(remote().available,false,'same ID with incompatible duration is not linked');
-  commit='c';await service.refreshDataset();assert.equal(remote().available,false);assert.equal(remote().script_ready,false);
+  commit='c';await service.refreshDataset();assert.equal(remote().available,false);assert.equal(remote().script_ready,true,'unchanged verified scripts survive unrelated HF commits, even while video is offline');
   assert.deepEqual(remote().categories,['Custom']);assert.equal(remote().user_rating,4);
 });
 

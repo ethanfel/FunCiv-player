@@ -1321,6 +1321,7 @@
       "error": "Erreur"
     },
     "source": {
+      "composer": "Composer",
       "web-remote": "Télécommande web",
       "vr": "Compagnon VR"
     },

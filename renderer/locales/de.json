@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Publikumsraum"
   },
   "nav": {
+    "composer": "Composer",
     "library": "Bibliothek",
     "playlists": "Playlists",
     "categories": "Kategorien",
@@ -1320,6 +1321,7 @@
       "error": "Fehler"
     },
     "source": {
+      "composer": "Composer",
       "web-remote": "Web-Fernsteuerung",
       "vr": "VR-Companion"
     },

@@ -5,6 +5,7 @@ import { DEFAULT_OUTPUT, outputSettings } from './output.mjs';
 export { DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings } from './output.mjs';
 import { sectionCategories, matchesSection, sectionRegions, validateRegionCoverage } from './regions.mjs';
 import { videoIdentities } from './video-identity.mjs';
+import { assignUnique } from './unique-assignment.mjs';
 export { videoIdentities } from './video-identity.mjs';
 export { sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from './regions.mjs';
 export { audioChangeMarkers, snapToAudio, suggestRegionCuts } from './audio-cuts.mjs';
@@ -17,6 +18,7 @@ export const clone = value => structuredClone(value);
 const validRating = value => Number.isInteger(value) && value >= 0 && value <= 5;
 /** Ratings belong to a script variant. An explicit local override of zero means unrated. */
 export const clipRating = clip => validRating(clip?.user_rating) ? clip.user_rating : validRating(clip?.quality) ? clip.quality : 0;
+export const clipIntensity = clip => validRating(clip?.intensity) ? clip.intensity : 0;
 export const isDraftClip = clip => clip?.review_status === 'draft' || (clip?.origin === 'dataset' && clip.review_status !== 'approved');
 export const allowsClipReview = (session, clip) => session.include_drafts === true || !isDraftClip(clip);
 export const isAudioSyncClip = clip => clip?.audio_sync === true;
@@ -129,22 +131,21 @@ export function arrange(session, clips) {
   // Reserve all kept footage first, including sections later in the song.
   for(const s of session.sections)for(const p of sectionRegions(session,s))if(p.clip_id&&(s.locked||s.planned_regions&&p.locked))remember(p.clip_id);
   let previous = null, index = 0;
-  const pools=new Map(session.sections.map(section=>[section.id,clips.filter(c => allowsClipReview(session,c) && c.available !== false && c.duration_ms >= 100 && clipRating(c) >= (session.min_rating ?? 0) &&
+  const tasks=[];
+  const pools=new Map(session.sections.map(section=>[section.id,clips.filter(c => !c.retired && allowsClipReview(session,c) && c.available !== false && c.duration_ms >= 100 && clipRating(c) >= (session.min_rating ?? 0) &&
     matchesSection(c,section)&&hasMotionForSection(c,section)).sort((a,b)=>a.id.localeCompare(b.id))]));
-  const scarcity=s=>new Set(pools.get(s.id).map(c=>key(c.id))).size/Math.max(1,s.planned_regions?sectionRegions(session,s).filter(p=>!p.locked).length:Math.ceil((s.end_ms-s.start_ms)/Math.max(100,...pools.get(s.id).map(c=>c.duration_ms))));
-  // Give the most restricted category pools first choice; timeline order is retained below.
-  const sections=noRepeats?[...session.sections].sort((a,b)=>scarcity(a)-scarcity(b)||a.start_ms-b.start_ms):session.sections;
   const choose=(eligible,section,at)=>{
     let choices=eligible.filter(c=>!noRepeats||!uses.has(key(c.id)));
     if(!choices.length){const error=new Error(`Cannot fill ${section.label} at ${(at/1000).toFixed(1)} s without repeating a video. Add unique footage or allow matching drafts; your current timeline is unchanged.`);error.code='UNIQUE_FOOTAGE';error.section_id=section.id;throw error;}
     const minimum=Math.min(...choices.map(c=>uses.get(key(c.id))||0));choices=choices.filter(c=>(uses.get(key(c.id))||0)===minimum);
+    const rating=Math.max(...choices.map(clipRating));choices=choices.filter(c=>clipRating(c)===rating);
     const approved=choices.filter(c=>!isDraftClip(c));if(approved.length)choices=approved;
     const alternatives=choices.filter(c=>key(c.id)!==previous);if(alternatives.length)choices=alternatives;
     const groups=[...new Set(choices.map(c=>key(c.id)))],selected=groups[Math.floor(rng()*groups.length)];
     let variants=choices.filter(c=>key(c.id)===selected);const reviewed=variants.filter(c=>!isDraftClip(c));if(reviewed.length)variants=reviewed;
     const clip=variants[Math.floor(rng()*variants.length)];remember(clip.id);previous=key(clip.id);return clip;
   };
-  for (const section of sections) {
+  for (const section of session.sections) {
     const existing=sectionRegions(session,section);
     if (section.locked) {
       if (!existing.length) throw new Error(`Unlock ${section.label} before its first assembly.`);
@@ -155,22 +156,24 @@ export function arrange(session, clips) {
       placements.push(...clone(existing)); previous=key(existing.at(-1).clip_id); continue;
     }
     const pool = pools.get(section.id);
-    if (!pool.length) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check the minimum rating, draft filter and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
+    if (!pool.length&&!section.planned_regions) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check the minimum rating, draft filter and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
     if(section.planned_regions){
       validateRegionCoverage(section,existing);
-      const regions=noRepeats?[...existing].sort((a,b)=>pool.filter(c=>c.duration_ms>=(a.end_ms-a.start_ms)*a.rate).length-pool.filter(c=>c.duration_ms>=(b.end_ms-b.start_ms)*b.rate).length||a.start_ms-b.start_ms):existing;
-      for(const region of regions){
+      for(const region of existing){
         if(region.locked&&region.clip_id){
-          if(!pool.some(c=>c.id===region.clip_id))throw new Error('A kept clip no longer matches this section’s category, rating, draft or motion filters. Unlock it before assembling.');
+          const c=clips.find(c=>c.id===region.clip_id);
+          if(!c||c.available===false||!allowsClipReview(session,c)||clipRating(c)<(session.min_rating??0)||!matchesSection(c,section)||!hasMotionForSection(c,section))throw new Error('A kept clip no longer matches this section’s category, rating, draft or motion filters. Unlock it before assembling.');
           placements.push(clone(region));previous=key(region.clip_id);continue;
         }
         const required=(region.end_ms-region.start_ms)*region.rate,eligible=pool.filter(c=>c.duration_ms>=required);
         if(!eligible.length)throw new Error(`No clip is long enough for ${section.label}, ${(region.start_ms/1000).toFixed(2)}–${(region.end_ms/1000).toFixed(2)} s. Shorten or split this region, or select a folder with longer clips.`);
+        if(noRepeats){tasks.push({section,region,pool:eligible,start_ms:region.start_ms,end_ms:region.end_ms});continue;}
         const clip=choose(eligible,section,region.start_ms);
         placements.push({...clone(region),clip_id:clip.id,source_in_ms:Math.floor(rng()*Math.max(0,clip.duration_ms-required))});
       }
       continue;
     }
+    if(noRepeats){tasks.push({section,pool,start_ms:section.start_ms,end_ms:section.end_ms});continue;}
     let start = section.start_ms;
     while (start < section.end_ms) {
       const clip = choose(pool,section,start);
@@ -180,6 +183,12 @@ export function arrange(session, clips) {
       start = end;
       if (placements.length > 5000) throw new Error('Session has too many cuts. Use longer clips.');
     }
+  }
+  if(noRepeats)for(const {task,clip,start_ms,end_ms} of assignUnique(tasks,{key,reserved:new Set(uses.keys()),rng,isDraft:isDraftClip,rating:clipRating})){
+    const region=task.region;
+    placements.push(region?{...clone(region),clip_id:clip.id,source_in_ms:Math.floor(rng()*Math.max(0,clip.duration_ms-(end_ms-start_ms)*region.rate))}:
+      {id:`${task.section.id}-${index++}`,section_id:task.section.id,clip_id:clip.id,start_ms,end_ms,source_in_ms:0,rate:1});
+    if(placements.length>5000)throw new Error('Session has too many cuts. Use longer clips.');
   }
   result.placements = placements.sort((a,b)=>a.start_ms-b.start_ms);
   delete result.asset_bindings; // A deliberate reassembly adopts the current catalog.

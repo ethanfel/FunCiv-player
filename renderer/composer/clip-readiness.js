@@ -4,7 +4,8 @@ export function clipReadiness(clip,session={include_drafts:true,min_rating:0},se
   const video=clip.available?'local':clip.path?'missing':'unlinked';
   const motion=hasMotionForSection(clip,section)?'ready':clip.origin==='dataset'&&clip.remote_scripts?.L0?'fetch':'missing';
   const draft=!allowsClipReview(session,clip),rating=clipRating(clip)<(session.min_rating??0);
-  return {video,motion,draft,rating,ready:video==='local'&&motion==='ready'&&!draft&&!rating};
+  const retired=clip.retired===true;
+  return {video,motion,draft,rating,retired,ready:video==='local'&&motion==='ready'&&!draft&&!rating&&!retired};
 }
 
 export function folderReadiness(clips,session,section){
@@ -16,6 +17,7 @@ export function folderReadiness(clips,session,section){
     [states.filter(s=>s.video==='local'&&s.motion==='missing').length,'has no motion script','have no motion script'],
     [states.filter(s=>s.draft).length,'draft excluded','drafts excluded'],
     [states.filter(s=>s.rating).length,`below ${session.min_rating}★`,`below ${session.min_rating}★`],
+    [states.filter(s=>s.retired).length,'retired variant','retired variants'],
   ].filter(([count])=>count).map(([count,one,many])=>`${count} ${count===1?one:many}`);
   return {total:clips.length,ready:states.filter(s=>s.ready).length,reasons};
 }
@@ -23,7 +25,7 @@ export function folderReadiness(clips,session,section){
 export function pendingLocalScripts(clips,session){
   return clips.filter(c=>{
     const status=clipReadiness(c,session);
-    return status.video==='local'&&status.motion==='fetch'&&!status.draft&&!status.rating&&!isAudioSyncClip(c);
+    return status.video==='local'&&status.motion==='fetch'&&!status.draft&&!status.rating&&!status.retired&&!isAudioSyncClip(c);
   });
 }
 

@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Комната зрителей"
   },
   "nav": {
+    "composer": "Композитор",
     "library": "Библиотека",
     "playlists": "Плейлисты",
     "categories": "Категории",
@@ -1320,6 +1321,7 @@
       "error": "Ошибка"
     },
     "source": {
+      "composer": "Композитор",
       "web-remote": "Веб-пульт",
       "vr": "VR-компаньон"
     },

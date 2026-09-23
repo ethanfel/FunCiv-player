@@ -5,7 +5,7 @@ export async function checkLibraryReadiness(page,screenshot){
     const c=window.app.composer,old={roots:c.catalog.roots,view:c.root.querySelector('[data-field=library-view]').value,selected:c.clipLibrary.selected};
     c.catalog.roots=[];
     const video=c.catalog.clips.find(c=>c.name==='A.mp4');
-    c.catalog.clips.push({...video,id:'needs-hf-scripts',origin:'dataset',name:'Local video with HF scripts',categories:['Pending scripts'],quality:5,user_rating:undefined,review_status:'approved',scripts:undefined,script_ready:false,remote_scripts:{L0:{}}});
+    c.catalog.clips.push({...video,id:'needs-hf-scripts',origin:'dataset',name:'Local video with HF scripts',categories:['Pending scripts'],quality:5,intensity:4,intensity_mode:'auto',user_rating:undefined,review_status:'approved',scripts:undefined,script_ready:false,remote_scripts:{L0:{}}});
     c.root.querySelector('[data-field=library-view]').value='all';c.renderLibrary();return old;
   });
   assert.ok((await page.locator('.fc-local-library').textContent()).includes('No local folder indexed'));
@@ -13,6 +13,9 @@ export async function checkLibraryReadiness(page,screenshot){
   await page.locator('[data-action=inspect-library-clip][data-id=needs-hf-scripts]').click({force:true});
   assert.ok((await page.locator('.fc-file-status').textContent()).includes('Local video linked'));
   assert.ok((await page.locator('.fc-file-status').textContent()).includes('A.mp4'));
+  assert.ok((await page.locator('.fc-intensity').textContent()).includes('4/5 · Automatic estimate'));
+  assert.ok((await page.locator('.fc-intensity').textContent()).includes('Stored for future song matching'));
+  assert.ok(await page.locator('.fc-intensity small').evaluateAll(lines=>lines[1].getBoundingClientRect().top>=lines[0].getBoundingClientRect().bottom),'intensity value and explanation occupy separate readable lines');
   assert.equal(await page.locator('.fc-clip-details [data-action=fetch-scripts]').textContent(),'Get HF scripts');
   assert.equal(await page.locator('.fc-clip-details [data-action=resolve]').count(),0,'linked video offers scripts only');
   await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});

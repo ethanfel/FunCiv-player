@@ -8,6 +8,7 @@ import { ClipLibrary } from './clip-library.js';
 import { SectionEditor } from './section-editor.js';
 import { pendingLocalScripts } from './clip-readiness.js';
 import { offerDraftAssembly } from './assembly-dialog.js';
+import { acceptDraftAssembly } from '../../packages/composer-core/draft-proposal.mjs';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
@@ -31,7 +32,7 @@ export class ComposerView {
           <label>Show<select data-field="library-view"><option value="all">All catalog</option><option value="ready">Ready for motion</option><option value="local">Local videos</option><option value="audio-sync">Audio sync clips</option><option value="used">Used in session</option></select></label>
           <details class="fc-library-filters"><summary>Filters <span class="fc-library-filter-summary"></span></summary>
           <label>Minimum rating for session<select data-field="min_rating">${options([[0,'All ratings (including unrated)'],[1,'1★ or higher'],[2,'2★ or higher'],[3,'3★ or higher'],[4,'4★ or higher'],[5,'5★ only']].map(([n,label])=>[String(n),label]),'0')}</select></label>
-          <small>Applies to assembly, preview and export.</small>
+          <small>Higher ratings are chosen first during assembly. This minimum applies to assembly, preview and export.</small>
           <label>Sort clips<select data-field="library-sort"><option value="rating">Rating: highest first</option><option value="name">Name: A–Z</option></select></label>
           <label class="fc-check"><input data-field="drafts" type="checkbox" aria-describedby="fc-draft-help"> Include draft scripts (unreviewed)</label>
           <small id="fc-draft-help">Saved with this session. Star ratings do not mean a script has been reviewed.</small>
@@ -120,6 +121,24 @@ export class ComposerView {
     void this.player.loadSong(this.session.song,this.position||0).catch(e=>this.message(e.message,true));
   }
   discardOkay(){return !this.dirty||window.confirm('Leave this session without saving your changes?');}
+  save(){
+    const current=this.session,snapshot=clone(current);
+    // Serialize this view's requests, but let editing and navigation continue.
+    // A reply acknowledges its own snapshot, never a newer editor state.
+    const operation=async()=>{
+      snapshot.revision=this.revisions.get(snapshot.id)??snapshot.revision;
+      const saved=await this.ipc('save',{session:snapshot});
+      this.revisions.set(saved.id,saved.revision);
+      if(this.session?.id===saved.id)this.session.revision=saved.revision;
+      const unchanged=this.session===current;
+      if(unchanged){Object.assign(current,saved);this.dirty=false;}
+      await this.refresh();
+      this.message(this.session===current&&!this.dirty?'Session saved.':`Saved “${saved.name}”. Current edits are preserved.`);
+      return saved;
+    };
+    this.saveQueue=(this.saveQueue||Promise.resolve()).catch(()=>{}).then(operation);
+    return this.saveQueue;
+  }
   async action(action,button){
     if(this.timeline.action(action))return;
     if(action==='inspect-library-clip'){this.clipLibrary.select(button.dataset.id);return;}
@@ -140,7 +159,7 @@ export class ComposerView {
     if(action==='inspector-section'||action==='inspector-clip'){this.inspectorMode=action==='inspector-clip'?'clip':'section';this.renderInspector();return;}
     if(action==='import'){if(!this.discardOkay())return;const song=await this.job('song');if(song)this.newSong(song);return;}
     if(!this.session)throw new Error('Load a song first.');
-    if(action==='save'){this.session.revision=this.revisions.get(this.session.id)??this.session.revision;this.session=await this.ipc('save',{session:this.session});this.revisions.set(this.session.id,this.session.revision);this.dirty=false;await this.refresh();this.message('Session saved.');return;}
+    if(action==='save'){await this.save();return;}
     if(action==='undo'||action==='redo'){this.invalidate();this.session=this.history[action](this.session);this.session.revision=this.revisions.get(this.session.id)??this.session.revision;this.dirty=true;this.selected=Math.min(this.selected,this.session.sections.length-1);this.renderEditor();return;}
     if(action==='analyze'){await this.analyze();return;}
     if(action==='split'){
@@ -159,8 +178,8 @@ export class ComposerView {
           const fetched=await this.job('fetch-scripts',{ids:proposal.fetchIds});
           if(this.session!==initial)throw new Error('The session changed while fetching scripts. Assemble again.');
           if(fetched.warnings.length)throw new Error(`Some scripts could not be fetched. ${fetched.warnings.slice(0,3).join(' · ')}`);
-          assembled=arrange(proposal.session,this.catalog.clips);
-        }else assembled=proposal.assembled;
+        }
+        assembled=acceptDraftAssembly(proposal,this.catalog.clips);
       }
       this.history.record(initial);this.invalidate();this.session=assembled;this.dirty=true;this.renderEditor();
       this.message(`${assembled.placements.length} clips arranged. ${assembled.repeat_policy==='cycle'?'Repeats allowed after matching videos have been used.':'No new video repeats.'}${assembled.include_drafts&&!initial.include_drafts?' Draft scripts included; Undo restores the previous choice.':''}`);return;
@@ -225,7 +244,7 @@ export class ComposerView {
       const used=this.session?.placements.some(p=>p.clip_id===input.dataset.id);if(used)this.invalidate();
       this.catalog=await this.ipc('rating',{id:input.dataset.id,rating:input.value===''?null:Number(input.value)});
       if(used||this.ratingConflicts().length)this.invalidate();this.renderLibrary();this.renderInspector();this.draw();
-      this.message('Clip rating saved. Reassemble if a used clip is below the session minimum.');return;
+      this.message('Clip rating saved. Assembly prefers higher ratings. Reassemble to update clip choices.');return;
     }
     if(field==='volume'){this.player.audio.volume=Number(input.value);return;}
     if(field==='search')return;
@@ -289,19 +308,20 @@ export class ComposerView {
     const search=this.root.querySelector('[data-field=search]').value.toLowerCase();
     const view=this.root.querySelector('[data-field=library-view]').value,sort=this.root.querySelector('[data-field=library-sort]').value,minimum=this.minimumRating();
     const roots=this.catalog.roots||[],pending=pendingLocalScripts(this.catalog.clips,{include_drafts:this.includeDrafts,min_rating:minimum});
-    this.root.querySelector('.fc-local-library').innerHTML=roots.length?`<details><summary>${roots.length} local folder${roots.length===1?'':'s'} indexed</summary>${roots.map(root=>`<small>${esc(root)}</small>`).join('')}<button data-action="rescan">Rescan local folders</button></details>`:'<p>No local folder indexed. Videos already on disk? Use <strong>＋ Folder</strong> to link them to HF.</p>';
+    const offline=roots.filter(root=>this.catalog.root_status?.[root]?.available===false);
+    this.root.querySelector('.fc-local-library').innerHTML=roots.length?`<details ${offline.length?'open':''}><summary>${roots.length} local folder${roots.length===1?'':'s'} indexed${offline.length?' · '+offline.length+' offline':''}</summary>${roots.map(root=>`<small>${esc(root)}${offline.includes(root)?' · Offline — reconnect the folder, then rescan':''}</small>`).join('')}<button data-action="rescan">Rescan local folders</button></details>`:'<p>No local folder indexed. Videos already on disk? Use <strong>＋ Folder</strong> to link them to HF.</p>';
     if(pending.length)this.root.querySelector('.fc-local-library').insertAdjacentHTML('beforeend',`<button data-action="fetch-scripts">Get HF scripts · ${pending.length} local video${pending.length===1?'':'s'}</button><small>Uses current rating/draft filters. Downloads scripts only.</small>`);
     this.root.querySelector('[data-field=min_rating]').value=String(minimum);
     this.root.querySelector('[data-field=drafts]').checked=this.includeDrafts;
     this.root.querySelector('.fc-library-filter-summary').textContent=`${minimum?minimum+'★+':'All ratings'} · drafts ${this.includeDrafts?'on':'off'}`;
-    const draftCount=this.catalog.clips.filter(isDraftClip).length,review=this.root.querySelector('.fc-dataset-review');
+    const draftCount=this.catalog.clips.filter(c=>!c.retired&&isDraftClip(c)).length,review=this.root.querySelector('.fc-dataset-review');
     review.hidden=!draftCount;
     review.textContent=`${this.catalog.dataset?.review_policy==='all-drafts'?'This dataset publishes all variants as unreviewed drafts. ':''}${draftCount} draft variant${draftCount===1?'':'s'} ${this.includeDrafts?'included before rating and availability filters.':'hidden from browsing and assembly. Enable Include draft scripts to use them.'}`;
     const draftConflicts=this.draftConflicts(),draftWarning=this.root.querySelector('.fc-draft-warning');draftWarning.hidden=!draftConflicts.length;
     draftWarning.textContent=`${draftConflicts.length} used draft clip${draftConflicts.length===1?' is':'s are'} excluded. Enable Include draft scripts, or unlock and replace them before preview or export. “Used in session” keeps them visible.`;
     const used=new Map();for(const p of this.session?.placements||[])if(p.clip_id)used.set(p.clip_id,(used.get(p.clip_id)||0)+1);
     const clips=this.catalog.clips.filter(c=>
-      (view==='used'?used.has(c.id):(this.includeDrafts||!isDraftClip(c))&&clipRating(c)>=minimum)&&
+      (view==='used'?used.has(c.id):!c.retired&&(this.includeDrafts||!isDraftClip(c))&&clipRating(c)>=minimum)&&
       (view!=='ready'||ready(c))&&(view!=='local'||c.available)&&(view!=='audio-sync'||isAudioSyncClip(c))&&`${c.name} ${(c.categories||[]).join(' ')} ${(c.category_paths||[]).join(' ')} ${isAudioSyncClip(c)?'audio sync':''}`.toLowerCase().includes(search))
       .sort((a,b)=>(sort==='rating'?clipRating(b)-clipRating(a):0)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
     const conflicts=this.ratingConflicts(),warning=this.root.querySelector('.fc-rating-warning');warning.hidden=!conflicts.length;

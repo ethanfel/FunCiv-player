@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Sala de audiencia"
   },
   "nav": {
+    "composer": "Compositor",
     "library": "Biblioteca",
     "playlists": "Listas de reproducción",
     "categories": "Categorías",
@@ -1320,6 +1321,7 @@
       "error": "Error"
     },
     "source": {
+      "composer": "Compositor",
       "web-remote": "Mando web",
       "vr": "Compañero VR"
     },
