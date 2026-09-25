@@ -1,10 +1,13 @@
 import { clone, validateSession, sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, suggestRegionCuts, snapToAudio, clipRating, allowsClipReview, sourceTime, isAudioSyncClip, hasMotionForSection } from '../../packages/composer-core/index.mjs';
-import { folderReadiness } from './clip-readiness.js';
+import { clipMetadataIndex, matchesSourceFilters } from '../../packages/composer-core/source-metadata.mjs';
+import { openFolderPicker } from './folder-picker.js';
+import { replaceClip, remakeSection } from '../../packages/composer-core/variations.mjs';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const time=ms=>(ms/1000).toFixed(3);
 export const REGION_TOOLS=`<div class="fc-region-tools"><strong>Clip regions</strong><button data-action="mark-in">Mark in</button><button data-action="mark-out">Mark out</button><button data-action="split-region" title="Split a video region inside its existing song section">Split clip at playhead</button><button data-action="merge-region">Merge next clip</button><label class="fc-check"><input data-field="snap-audio" type="checkbox" checked> Snap to audio</label></div>
-<div class="fc-region-tools"><label>Suggested spacing<select data-field="region-beats"><option value="2">2 beats</option><option value="4" selected>4 beats</option><option value="8">8 beats</option><option value="16">16 beats</option></select></label><button data-action="suggest-regions">Suggest audio cuts</button><button data-action="apply-regions" disabled>Apply suggested cuts</button><button data-action="auto-regions">Auto clip lengths</button><small data-region-hint>Sections set category pools. Regions set clip timing.</small></div>`;
+<div class="fc-region-tools"><label>Suggested spacing<select data-field="region-beats"><option value="2">2 beats</option><option value="4" selected>4 beats</option><option value="8">8 beats</option><option value="16">16 beats</option></select></label><button data-action="suggest-regions">Suggest audio cuts</button><button data-action="apply-regions" disabled>Apply suggested cuts</button><button data-action="auto-regions">Use automatic cuts</button><small data-region-hint>Sections set category pools. Regions set clip timing.</small></div>
+<div class="fc-region-tools fc-auto-lengths"><strong>Auto clips</strong><label>Min <input data-field="auto-min" type="number" min="0.1" max="120" step="0.1" value="4" aria-label="Minimum automatic clip seconds"> s</label><label>Max <input data-field="auto-max" type="number" min="0.1" max="120" step="0.1" value="12" aria-label="Maximum automatic clip seconds"> s</label><small>At least 2 different videos per section · manual cuts stay as placed</small><span class="fc-spacer"></span><small>Space: play / pause</small></div>`;
 
 export class RegionEditor {
   constructor(view){
@@ -21,6 +24,14 @@ export class RegionEditor {
   selected(){return this.view.session?.placements.find(p=>p.id===this.view.selectedPlacement);}
   select(id){const p=this.view.session?.placements.find(p=>p.id===id);if(!p)return;this.view.inspectorMode='clip';this.view.selectedPlacement=id;this.view.selected=this.view.session.sections.findIndex(s=>s.id===p.section_id);this.view.renderEditor();}
   async action(action){
+    if(action==='replace-clip'||action==='remake-section'){
+      const v=this.view;if(!v.session)throw new Error('Load a song first.');
+      const section=v.session.sections[v.selected];
+      const next=action==='replace-clip'?replaceClip(v.session,v.selectedPlacement,v.catalog.clips):remakeSection(v.session,section.id,v.catalog.clips);
+      this.commit(next);
+      v.message(action==='replace-clip'?'Clip replaced. Its timeline span and speed are unchanged; the new clip is kept on variation.':`${section.label} remade. Other sections, manual cuts and kept clips are preserved.`);
+      return true;
+    }
     if(!['mark-in','mark-out','split-region','merge-region','suggest-regions','apply-regions','auto-regions'].includes(action))return false;
     const v=this.view,s=v.session;if(!s)throw new Error('Load a song first.');
     const at=Math.round(v.position||0),section=s.sections[v.selected];
@@ -68,42 +79,25 @@ export class RegionEditor {
     if(field==='clip_id'||field==='rate'||field==='clip-locked'){
       const next=clone(v.session),p=next.placements.find(p=>p.id===v.selectedPlacement);if(!p)throw new Error('Select a clip region first.');
       if(field==='clip-locked'){if(!p.clip_id&&input.checked)throw new Error('Assign a clip before keeping it.');p.locked=input.checked;}
-      else if(field==='clip_id'){if(!input.value)throw new Error('Choose a clip.');p.clip_id=input.value;p.source_in_ms=0;p.locked=true;}
+      else if(field==='clip_id'){
+        const clip=v.catalog.clips.find(c=>c.id===input.value),section=next.sections.find(s=>s.id===p.section_id);
+        if(!clip)throw new Error('Choose a clip.');
+        if(!matchesSourceFilters(clip,next,section,clipMetadataIndex(v.catalog.clips)))throw new Error('This clip does not match the section’s source filters.');
+        p.clip_id=input.value;p.source_in_ms=0;p.locked=true;
+      }
       else{p.rate=Number(input.value);p.locked=true;}
       next.sections.find(s=>s.id===p.section_id).planned_regions=true;delete next.asset_bindings;validateSession(next,v.catalog.clips);this.commit(next);return true;
     }
     return false;
   }
-  setCategories(id,categories){
+  setCategories(id,categories,folders){
     const v=this.view,next=clone(v.session),section=next.sections.find(s=>s.id===id);if(!section)throw new Error('Select a song section first.');
-    section.categories=categories;delete section.category;section.locked=false;
+    section.categories=categories;if(folders!==undefined)section.folders=folders;delete section.category;section.locked=false;
     const regions=sectionRegions(next,section);if(regions.length)section.planned_regions=true;
     for(const p of regions){const clip=v.catalog.clips.find(c=>c.id===p.clip_id);if(!clip||!matchesSection(clip,section)){p.clip_id=null;p.source_in_ms=0;p.rate=1;p.locked=false;}}
     delete next.asset_bindings;this.commit(next);
   }
-  folders(id){
-    const v=this.view,session=v.session,section=session?.sections.find(s=>s.id===id);if(!section)throw new Error('Load a song and select a section.');
-    v.selectSection(session.sections.indexOf(section));
-    const selected=new Set(sectionCategories(section)),catalog=v.catalog.clips.filter(c=>!c.retired),categories=[...new Set(catalog.flatMap(c=>c.categories||[]).concat([...selected]))].sort();
-    const dialog=document.createElement('dialog');dialog.className='fc-dialog fc-folder-dialog';
-    dialog.innerHTML=`<form method="dialog"><h2>Folders for ${esc(section.label)}</h2><p>This is a full song section. Its clips may come from any category you check.</p>
-      <div class="fc-folder-help"><strong>${v.catalog.roots?.length?`${v.catalog.roots.length} local folder${v.catalog.roots.length===1?'':'s'} indexed`:'No local folder indexed'}</strong><p>“Video not linked” means the app has no local match yet. If your videos are already on disk, index their folder to connect them to HF.</p><button value="index">Index local folder…</button><small>Session filters: ${v.minimumRating()?v.minimumRating()+'★ or higher':'all ratings'} · drafts ${v.includeDrafts?'included':'excluded'}. Ready counts use this section’s motion setting.</small></div>
-      <label class="fc-check"><input name="any" type="checkbox" ${selected.size?'':'checked'}> Any folder / category</label><div class="fc-folder-choices">${categories.map(category=>{
-      const status=folderReadiness(catalog.filter(c=>c.categories?.includes(category)),session,section);
-      return `<label class="fc-check"><input name="category" value="${esc(category)}" type="checkbox" ${selected.has(category)?'checked':''}><span>${esc(category)}<small>${status.ready} ready · ${status.total} catalog clips</small>${status.reasons.length?`<small class="fc-folder-reasons">${esc(status.reasons.join(' · '))}</small>`:''}</span></label>`;
-    }).join('')||'<p>Add a local folder or sync the dataset to get categories.</p>'}</div><p>Several reasons can apply to one clip. Use Library → Filters for ratings/drafts, or Get HF scripts for linked videos. HF categories and your folder choices are kept when files are linked.</p><div class="fc-actions"><button value="cancel">Cancel</button><button value="apply" class="fc-primary">Apply folders</button></div></form>`;
-    dialog.addEventListener('change',event=>{
-      if(event.target.name==='any'&&event.target.checked)dialog.querySelectorAll('[name=category]').forEach(c=>{c.checked=false;});
-      if(event.target.name==='category')dialog.querySelector('[name=any]').checked=![...dialog.querySelectorAll('[name=category]')].some(c=>c.checked);
-    });
-    dialog.addEventListener('close',()=>{
-      const choice=[...dialog.querySelectorAll('[name=category]:checked')].map(c=>c.value);dialog.remove();
-      if(dialog.returnValue==='index'){void v.action('scan').catch(e=>v.message(e.message,true));return;}
-      if(dialog.returnValue!=='apply')return;
-      try{if(v.session!==session)throw new Error('The session changed. Open its folder choices again.');this.setCategories(id,choice);v.message('Folder choices applied. Compatible clips and trims are kept; assemble to fill empty regions.');}catch(e){v.message(e.message,true);}
-    });
-    this.root.append(dialog);dialog.showModal();
-  }
+  folders(id){openFolderPicker(this,id);}
   renderTrack(){
     const v=this.view,s=v.session;if(!s)return;
     const clips=new Map(v.catalog.clips.map(c=>[c.id,c])),duration=s.song.duration_ms;
@@ -120,10 +114,11 @@ export class RegionEditor {
     const v=this.view,s=v.session,p=this.selected();if(!p)return '<p>Select a clip region to edit its timing and source portion.</p>';
     const section=s.sections.find(s=>s.id===p.section_id),regions=sectionRegions(s,section),index=regions.indexOf(p),clip=v.catalog.clips.find(c=>c.id===p.clip_id);
     const required=(p.end_ms-p.start_ms)*p.rate;
-    const choices=v.catalog.clips.filter(c=>!c.retired&&c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&allowsClipReview(v.session,c)&&c.duration_ms>=required&&hasMotionForSection(c,section));
+    const metadata=clipMetadataIndex(v.catalog.clips);
+    const choices=v.catalog.clips.filter(c=>!c.retired&&c.available&&clipRating(c)>=v.minimumRating()&&matchesSection(c,section)&&allowsClipReview(v.session,c)&&c.duration_ms>=required&&hasMotionForSection(c,section)&&matchesSourceFilters(c,s,section,metadata));
     const current=p.clip_id&&!choices.some(c=>c.id===p.clip_id)?`<option value="${esc(p.clip_id)}" selected disabled>Current: ${esc(clip?.name||'Missing clip')} (outside filters)</option>`:'';
     const max=clip?Math.max(0,clip.duration_ms-required):0;
-    return `<h3>Selected clip region</h3><label>Song start (seconds)<input data-field="region-start" type="number" step="0.001" value="${time(p.start_ms)}" ${index===0?'disabled':''}></label><label>Song end (seconds)<input data-field="region-end" type="number" step="0.001" value="${time(p.end_ms)}" ${index===regions.length-1?'disabled':''}></label><small>Drag a region edge to move the shared cut. Neighbors stay joined.</small>
+    return `<h3>Selected clip region</h3><button data-action="replace-clip" ${section.locked?'disabled':''} title="Choose a different matching video for this span. Other clips stay in place.">Replace clip</button><label>Song start (seconds)<input data-field="region-start" type="number" step="0.001" value="${time(p.start_ms)}" ${index===0?'disabled':''}></label><label>Song end (seconds)<input data-field="region-end" type="number" step="0.001" value="${time(p.end_ms)}" ${index===regions.length-1?'disabled':''}></label><small>Drag a region edge to move the shared cut. Neighbors stay joined.</small>
       <label>${p.clip_id?'Replace with':'Assign clip'}<select data-field="clip_id"><option value="" ${!p.clip_id?'selected':''} disabled>Choose a clip…</option>${current}${choices.map(c=>`<option value="${esc(c.id)}" ${c.id===p.clip_id?'selected':''}>${clipRating(c)||'–'}★ · ${esc(c.name)}</option>`).join('')}</select></label>${!choices.length?'<small>No qualifying clip is long enough. Shorten/split this region or select another folder category.</small>':''}
       ${isAudioSyncClip(clip)?`<p class="fc-audio-sync-note">Audio sync · ${section.motion==='hold'?'Neutral hold is selected for this section.':'This region uses song-generated strokes; secondary axes stay neutral. Analyze the song before preparing preview.'}</p>`:''}
       ${clip?`<video class="fc-source-preview" data-source-preview muted playsinline controls preload="metadata"></video><label>Source portion · drag the window<div class="fc-source-rail"><button class="fc-source-window" data-source-drag="${esc(p.id)}" title="Move the source portion without changing song timing" style="left:${p.source_in_ms/clip.duration_ms*100}%;width:${required/clip.duration_ms*100}%">↔</button></div></label><label>Source start<input data-field="source-offset" type="range" min="0" max="${max}" step="1" value="${p.source_in_ms}" ${max===0?'disabled':''}></label><label>Source in (seconds)<input data-field="source_in_ms" type="number" min="0" max="${max/1000}" step="0.001" value="${time(p.source_in_ms)}"></label><small data-source-summary>Using ${time(p.source_in_ms)}–${time(sourceTime(p,p.end_ms))} s of ${time(clip.duration_ms)} s</small><label>Speed<input data-field="rate" type="number" min="0.25" max="4" step="0.05" value="${p.rate}"></label><label class="fc-check"><input data-field="clip-locked" type="checkbox" ${p.locked?'checked':''}> Keep this clip and trim on variation</label>`:''}`;

@@ -25,7 +25,7 @@ export class TimelineViewport {
       else if(event.shiftKey||Math.abs(event.deltaX)>Math.abs(event.deltaY)){event.preventDefault();this.viewport.scrollLeft+=(event.deltaX||event.deltaY)*unit;}
     },{passive:false});
     this.viewport.addEventListener('pointerdown',event=>{
-      if(!view.session||view.regionEditor?.drag||view.sectionEditor?.drag||event.button!==1&&(event.button!==0||!event.target.matches('.fc-wave,.fc-motion,.fc-ruler')))return;
+      if(!view.session||view.regionEditor?.drag||view.sectionEditor?.drag||event.button!==1&&(event.button!==0||!event.target.matches('.fc-wave,.fc-motion,.fc-ruler,.fc-saved-beats')))return;
       event.preventDefault();this.drag={id:event.pointerId,x:event.clientX,scroll:this.viewport.scrollLeft,pan:event.button===1};this.viewport.setPointerCapture(event.pointerId);
       this.viewport.classList.toggle('fc-panning',this.drag.pan);if(!this.drag.pan)view.setPosition(this.timeAt(event.clientX));
     });
@@ -61,7 +61,7 @@ export class TimelineViewport {
     this.draw();return true;
   }
   follow(time){
-    if(!this.view.player.intent||this.drag||!this.root.querySelector('[data-field=follow-playhead]').checked)return;
+    if(!this.view.player.intent||this.drag||this.view.sectionEditor?.drag||this.view.regionEditor?.drag||!this.root.querySelector('[data-field=follow-playhead]').checked)return;
     const width=this.viewport.clientWidth,x=time/(this.view.session?.song.duration_ms||1)*width*this.zoom;
     if(x<this.viewport.scrollLeft||x>this.viewport.scrollLeft+width-20)this.viewport.scrollLeft=Math.max(0,x-width*.15);
   }
@@ -69,6 +69,18 @@ export class TimelineViewport {
     const s=this.view.session,width=this.viewport.clientWidth;if(!s||!width)return;
     this.track.style.width=`${width*this.zoom}px`;
     const total=width*this.zoom,start=this.viewport.scrollLeft/total*s.song.duration_ms,perPixel=s.song.duration_ms/total,dpr=Math.min(window.devicePixelRatio||1,2);
+    const saved=this.root.querySelector('.fc-saved-beats'),blocks=s.music?.blocks||[];
+    saved.style.display=blocks.length?'block':'none';
+    if(blocks.length){
+      saved.style.width=`${width}px`;saved.style.height='54px';saved.width=Math.round(width*dpr);saved.height=54*dpr;
+      const ctx=saved.getContext('2d');ctx.scale(dpr,dpr);
+      for(const b of blocks){
+        const lo=Math.max(0,Math.ceil((b.start-start)/perPixel)),hi=Math.min(width,Math.ceil((b.end-start)/perPixel));if(hi<=lo)continue;
+        ctx.fillStyle='#39304f';ctx.fillRect(lo,18,hi-lo,36);ctx.strokeStyle='#c4b5fd';ctx.beginPath();
+        for(let x=lo;x<=hi;x++){const y=51-evaluate(b.actions,start+x*perPixel)*.3;if(x===lo)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();
+      }
+      ctx.font='10px system-ui';ctx.fillStyle='#c4b5fd';ctx.fillText('Saved beats · Audio sync / Follow song · full motion shown below after preparing preview',8,12);
+    }
     const step=rulerInterval(perPixel),ticks=[];
     for(let at=Math.ceil(start/step)*step;at<=Math.min(s.song.duration_ms,start+width*perPixel);at+=step)ticks.push({at,x:(at-start)/perPixel});
     for(const selector of ['.fc-ruler','.fc-wave','.fc-motion']){

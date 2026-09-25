@@ -7,6 +7,7 @@ app.setName('FunCiv Player');
 app.setPath('userData', process.env.FUNCIV_USER_DATA || path.join(app.getPath('appData'), 'funciv-player'));
 app.setAppLogsPath(path.join(app.getPath('userData'), 'logs'));
 require('./composer-ipc').registerComposerIPC();
+require('./manga-ipc').registerMangaIPC();
 
 
 // --- Portable mode (run from a USB / external disk) -------------------------

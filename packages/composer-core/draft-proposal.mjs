@@ -1,4 +1,5 @@
 import { arrange, isDraftClip, hasMotionForSection, videoIdentities, validateSession, validateCoverage, assertClipRatings, assertClipReviews, matchesSection, clone } from './index.mjs';
+import { clipMetadataIndex, matchesSourceFilters } from './source-metadata.mjs';
 
 const asset=clip=>JSON.stringify([clip.path,clip.size,clip.mtime,clip.duration_ms,clip.civitai_id,clip.variant_id,clip.remote_scripts,clip.audio_sync]);
 
@@ -19,12 +20,12 @@ export function draftAssemblyProposal(session,clips){
 
 /** Commit the arrangement the user accepted; downloading is not a new draw. */
 export function acceptDraftAssembly(proposal,clips){
-  const session=proposal.assembled,byId=new Map(clips.map(c=>[c.id,c]));
+  const session=proposal.assembled,byId=new Map(clips.map(c=>[c.id,c])),metadata=clipMetadataIndex(clips);
   validateSession(session,clips);validateCoverage(session);assertClipRatings(session,clips);assertClipReviews(session,clips);
   for(const p of session.placements){
     const c=byId.get(p.clip_id),section=session.sections.find(s=>s.id===p.section_id);
     const kept=section.locked||section.planned_regions&&p.locked;
-    if(!c||c.available===false||!hasMotionForSection(c,section)||(!kept&&(c.retired||!matchesSection(c,section)))||asset(c)!==proposal.assets[c.id])
+    if(!c||c.available===false||!hasMotionForSection(c,section)||!matchesSourceFilters(c,session,section,metadata)||(!kept&&(c.retired||!matchesSection(c,section)))||asset(c)!==proposal.assets[c.id])
       throw new Error('A proposed clip changed or is no longer ready. Assemble again to review the current draft choices.');
   }
   return clone(session);

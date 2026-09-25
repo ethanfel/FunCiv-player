@@ -52,6 +52,84 @@ test('pause during an unfinished play never restarts the song',async()=>{
   }finally{player.destroy();}
 });
 
+test('invalidating an active preview keeps the same audio clock playing and stops its video decoders',async()=>{
+  const audio=new Media(),videos=[new Media(),new Media()],player=new CompositionPlayer(audio,videos,()=>{},assert.fail);
+  try{
+    await player.load(snapshot,[{id:'c',url:'file:///synthetic.mp4'}],1500);await player.play();
+    let pauses=0;audio.addEventListener('pause',()=>pauses++);const src=audio.src;
+    player.detachPreview();
+    assert.equal(pauses,0);assert.equal(audio.paused,false);assert.equal(player.intent,true);
+    assert.equal(audio.currentTime,1.5);assert.equal(audio.src,src);assert.equal(player.snapshot,null);
+    assert.ok(videos.every(v=>v.paused&&v.hidden));
+    await player.seek(2200);assert.equal(audio.paused,false);assert.equal(audio.currentTime,2.2);
+    player.pause();player.detachPreview();assert.equal(audio.paused,true);assert.equal(player.intent,false);
+  }finally{player.destroy();}
+});
+
+test('late preview play completions cannot stop song playback after an edit',async()=>{
+  for(const pending of ['video','audio']){
+    const audio=new Media(),videos=[new Media(),new Media()],player=new CompositionPlayer(audio,videos,()=>{},assert.fail);
+    try{
+      await player.load(snapshot,[{id:'c',url:'file:///synthetic.mp4'}]);
+      let release,calls=0;const target=pending==='audio'?audio:videos[player.active];
+      target.play=()=>++calls===1?new Promise(resolve=>{release=()=>{target.paused=false;resolve();};}):Media.prototype.play.call(target);
+      const play=player.play();while(!release)await new Promise(resolve=>setTimeout(resolve,0));
+      player.detachPreview();await Promise.resolve();assert.equal(audio.paused,false);
+      release();await play;
+      assert.equal(audio.paused,false,pending);assert.equal(player.intent,true);assert.equal(player.snapshot,null);
+      assert.ok(videos.every(v=>v.paused&&v.hidden));
+    }finally{player.destroy();}
+  }
+});
+
+test('live preview updates preserve the audio source, clock and intent across cuts',async()=>{
+  const audio=new Media(),videos=[new Media(),new Media()],player=new CompositionPlayer(audio,videos,()=>{},assert.fail);
+  try{
+    await player.load(snapshot,[{id:'c',url:'file:///synthetic.mp4'}],1200);await player.play();
+    let pauses=0,loads=0;audio.addEventListener('pause',()=>pauses++);audio.load=()=>loads++;
+    const next=structuredClone(snapshot);next.placements[0].source_in_ms=400;
+    await player.updatePreview(next,[{id:'c',url:'file:///synthetic.mp4'}]);
+    assert.equal(player.snapshot,next);assert.equal(player.current.id,'p0');
+    assert.equal(videos[player.active].currentTime,1.6);assert.equal(videos[player.active].hidden,false);
+    assert.equal(audio.currentTime,1.2);assert.equal(audio.src,snapshot.song.url);assert.equal(audio.paused,false);
+    audio.currentTime=2.2;player.tick();while(player.aligning)await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(player.current.id,'p1');assert.ok(Math.abs(videos[player.active].currentTime-.2)<.001);
+    assert.equal(pauses,0);assert.equal(loads,0);assert.equal(player.intent,true);
+    player.pause();await player.updatePreview(next,[{id:'c',url:'file:///synthetic.mp4'}]);
+    assert.equal(player.intent,false);assert.equal(audio.paused,true);assert.ok(videos.every(v=>v.paused));
+  }finally{player.destroy();}
+});
+
+test('a delayed live decoder follows the advancing song and cannot restart a stopped preview',async()=>{
+  for(const stopped of [false,true]){
+    const audio=new Media(),videos=[new Media(),new Media()],player=new CompositionPlayer(audio,videos,()=>{},assert.fail);
+    try{
+      await player.loadSong({...snapshot.song,duration_ms:4000});await player.play();
+      for(const video of videos)video.readyState=0;
+      const updating=player.updatePreview(snapshot,[{id:'c',url:'file:///synthetic.mp4'}]);
+      audio.currentTime=1.5;if(stopped)player.pause();
+      for(const video of videos){video.readyState=4;video.dispatchEvent(new Event('loadedmetadata'));}
+      await updating;
+      assert.equal(audio.currentTime,1.5);assert.equal(audio.paused,stopped);assert.equal(player.intent,!stopped);
+      if(!stopped)assert.equal(videos[player.active].currentTime,1.6,'catch up to the latest audio clock after loading');
+      else assert.ok(videos.every(v=>v.paused&&v.hidden));
+    }finally{player.destroy();}
+  }
+});
+
+test('live decoder failure keeps the song playing',async()=>{
+  const audio=new Media(),videos=[new Media(),new Media()],errors=[],player=new CompositionPlayer(audio,videos,()=>{},m=>errors.push(m));
+  try{
+    await player.loadSong({...snapshot.song,duration_ms:4000});await player.play();
+    for(const video of videos)video.readyState=0;
+    const updating=player.updatePreview(snapshot,[{id:'c',url:'file:///synthetic.mp4'}]);
+    for(const video of videos)video.dispatchEvent(new Event('error'));
+    await updating;
+    assert.equal(audio.paused,false);assert.equal(player.intent,true);assert.equal(player.snapshot,null);
+    assert.match(errors[0],/cannot be decoded/);
+  }finally{player.destroy();}
+});
+
 function fakeApp(){
   const local={video:new Media(),pause(){this.video.pause();}},calls=[];
   const engine=name=>({player:local,_active:false,start(){this._active=true;calls.push(`${name}:start`);},stop(){this._active=false;calls.push(`${name}:stop`);},reloadActions(){},clearAxisActions(){this.axes={};},setAxisActions(axis,actions){this.axes[axis]=actions;},setVibrationActions(){},axes:{}});

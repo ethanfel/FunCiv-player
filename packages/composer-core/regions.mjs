@@ -1,6 +1,8 @@
+import { matchesFolders } from './folders.mjs';
 export const MIN_REGION_MS = 100;
 export const sectionCategories = section => section.categories ?? (section.category && section.category !== '*' ? [section.category] : []);
-export const matchesSection = (clip, section) => !sectionCategories(section).length || sectionCategories(section).some(c => (clip.categories || []).includes(c));
+export const matchesSection = (clip, section) => matchesFolders(clip, section.folders) &&
+  (!sectionCategories(section).length || sectionCategories(section).some(c => (clip.categories || []).includes(c)));
 export const sectionRegions = (session, section) => session.placements.filter(p => p.section_id === section.id).sort((a,b) => a.start_ms-b.start_ms);
 
 export function validateRegionCoverage(section, regions) {
@@ -113,6 +115,8 @@ export function mergeSongSections(session,index){
     before.planned_regions=true;
   }
   const ac=sectionCategories(before),bc=sectionCategories(after);before.categories=ac.length&&bc.length?[...new Set([...ac,...bc])]:[];delete before.category;
+  const af=before.folders||[],bf=after.folders||[];
+  before.folders=af.length&&bf.length?[...new Map([...af,...bf].map(f=>[JSON.stringify([f.source,f.path]),f])).values()]:[];
   before.end_ms=after.end_ms;before.gaps=[...(before.gaps||[]),...(after.gaps||[])];
   for(const p of next.placements)if(p.section_id===after.id)p.section_id=before.id;
   next.placements.sort((a,b)=>a.start_ms-b.start_ms);next.sections.splice(index+1,1);delete next.asset_bindings;return normalizeSectionNames(next);

@@ -14,6 +14,7 @@ const VIDEO = new Set(['.mp4','.mkv','.webm','.mov','.m4v','.avi']);
 const REPO = 'ethanfel/FunCiv-Data';
 const hash = data => createHash('sha256').update(data).digest('hex');
 const core = () => import('../packages/composer-core/index.mjs');
+const usageCore = () => import('../packages/composer-core/usage.mjs');
 // Script bytes are immutable by checksum; a repository commit also changes
 // for unrelated uploads and category edits and is not an asset identity.
 const scriptDescriptors = scripts => Object.fromEntries(Object.keys(scripts||{}).filter(axis=>Object.hasOwn(AXES,axis)).sort().map(axis=>[axis,scripts[axis].sha256]));
@@ -44,11 +45,11 @@ async function fileHash(file) {
 class ComposerService {
   constructor(root,{ffmpeg='ffmpeg',ffprobe='ffprobe',fetchImpl=globalThis.fetch,getToken=()=>''}={}) {
     this.root=root;this.ffmpeg=ffmpeg;this.ffprobe=ffprobe;this.fetch=fetchImpl;this.getToken=getToken;
-    this.catalog={version:1,clips:[],songs:[],roots:[],dataset:null};this.jobs=new Map();this.saving=Promise.resolve();
+    this.catalog={version:1,clips:[],songs:[],roots:[],dataset:null};this.jobs=new Map();this.saving=Promise.resolve();this.usageReceipts=new Map();this.usageSaving=Promise.resolve();
   }
-  async init(){await fs.mkdir(this.root,{recursive:true});this.catalog=await readJSON(path.join(this.root,'catalog.json'),this.catalog);return this;}
+  async init(){await fs.mkdir(this.root,{recursive:true});this.catalog=await readJSON(path.join(this.root,'catalog.json'),this.catalog);this.usageTools=await usageCore();this.usage=await readJSON(path.join(this.root,'usage.json'),this.usageTools.createUsage());return this;}
   saveCatalog(){const value=structuredClone(this.catalog);this.saving=this.saving.catch(()=>{}).then(()=>atomic(path.join(this.root,'catalog.json'),value));return this.saving;}
-  state(){return structuredClone({...this.catalog,clips:this.catalog.clips.map(({scripts,...clip})=>({...clip,axes:Object.keys(scripts||clip.remote_scripts||{}),script_ready:!!scripts?.L0}))});}
+  state(){const usage=this.usageTools.usageByClip(this.catalog.clips,this.usage);return structuredClone({...this.catalog,clips:this.catalog.clips.map(({scripts,...clip})=>({...clip,usage:usage.get(clip.id),axes:Object.keys(scripts||clip.remote_scripts||{}),script_ready:!!scripts?.L0}))});}
   async run(binary,args,signal,onProgress){
     return new Promise((resolve,reject)=>{
       const child=spawn(binary,args,{windowsHide:true,stdio:['ignore','pipe','pipe'],signal});let out='',err='';
@@ -73,14 +74,20 @@ class ComposerService {
   job(id){const job=this.jobs.get(id);if(!job)throw new Error('Job not found.');const {controller,...publicJob}=job;return publicJob;}
   cancel(id){const job=this.jobs.get(id);if(job?.state==='running')job.controller.abort();return this.job(id);}
   async importSong(file,signal,update=()=>{}){
+    return this.importAudio(file,signal,update,'song');
+  }
+  async importBeatTrack(file,signal,update=()=>{}){
+    return this.importAudio(file,signal,update,'beat');
+  }
+  async importAudio(file,signal,update,kind){
     const stat=await fs.stat(file);if(!stat.isFile())throw new Error('Choose an audio file.');
-    update(.1,'Reading song…');const digest=await fileHash(file),id=`song-${digest.slice(0,24)}`,dest=path.join(this.root,'audio',`${id}.wav`);
+    update(.1,kind==='beat'?'Reading drums / beat track…':'Reading song…');const digest=await fileHash(file),id=`${kind}-${digest.slice(0,24)}`,dest=path.join(this.root,'audio',`${id}.wav`);
     await fs.mkdir(path.dirname(dest),{recursive:true});
     try {await fs.access(dest);}catch{
       const tmp=dest+'.part';try{await this.run(this.ffmpeg,['-v','error','-nostdin','-y','-i',file,'-vn','-ar','48000','-ac','2','-c:a','pcm_s16le','-f','wav',tmp],signal);await fs.rename(tmp,dest);}finally{await fs.rm(tmp,{force:true});}
     }
     const info=await this.probe(dest,signal);const song={id,name:path.basename(file),path:dest,original_path:file,sha256:digest,...info,url:pathToFileURL(dest).href};
-    this.catalog.songs=this.catalog.songs.filter(s=>s.id!==id);this.catalog.songs.push(song);await this.saveCatalog();update(1,'Song ready');return song;
+    const list=kind==='beat'?'beats':'songs';this.catalog[list]=(this.catalog[list]||[]).filter(s=>s.id!==id);this.catalog[list].push(song);await this.saveCatalog();update(1,kind==='beat'?'Beat track ready':'Song ready');return song;
   }
   async scan(root,signal,update=()=>{}){
     root=await fs.realpath(root);const files=[],warnings=[];
@@ -211,6 +218,7 @@ class ComposerService {
     throw new Error('Too many redirects.');
   }
   async refreshDataset(signal,update=()=>{}){
+    const {normalizeTags,normalizeTagSources,normalizeSourceMetadata}=await core();
     const info=JSON.parse(await this.bytes(`https://huggingface.co/api/datasets/${REPO}`,{signal}));
     if(!/^[a-f0-9]{40}$/.test(info.sha))throw new Error('Dataset did not return a commit.');
     const base=`https://huggingface.co/datasets/${REPO}/raw/${info.sha}/`;
@@ -227,11 +235,13 @@ class ComposerService {
       const id=`hf-${row.civitai_id}-${row.variant_id.slice(0,20)}`,existing=this.catalog.clips.find(c=>c.id===id);
       const local=this.catalog.clips.find(c=>c.origin!=='dataset'&&c.civitai_id===row.civitai_id&&c.available&&c.path&&Math.abs(c.duration_ms-row.duration_ms)<150);
       const datasetCategories=categoryList(row.categories,'categories',160),categoryPaths=categoryList(row.category_paths,'category paths',4096);
+      const tags=normalizeTags(row.tags),tag_sources=normalizeTagSources(row.tag_sources,tags);
       const automaticCategories=datasetCategories.length?datasetCategories:local?.categories?.length?local.categories:
         row.categories===undefined&&!existing?.manual_categories&&existing?.categories?.length?existing.categories:['Uncategorized'];
       incoming.push({...existing,id,name:`Civitai ${row.civitai_id}`,civitai_id:row.civitai_id,variant_id:row.variant_id,
         duration_ms:row.duration_ms,categories:existing?.manual_categories?[...existing.categories]:[...automaticCategories],manual_categories:existing?.manual_categories===true,
         dataset_categories:datasetCategories,category_paths:categoryPaths,automatic_categories:[...automaticCategories],
+        tags,tag_sources,...normalizeSourceMetadata(row),
         audio_sync:row.audio_sync===true,
         intensity:row.intensity??0,intensity_mode:row.intensity_mode??'manual',
         review_status:manifest.review_policy==='all-drafts'||row.review_status!=='approved'?'draft':'approved',quality:row.quality,
@@ -345,7 +355,25 @@ class ComposerService {
     if(!song||song.duration_ms!==session.song.duration_ms)throw new Error('Song is missing or its duration changed. Import it again.');
     await fs.access(song.path);
     const clips=await this.clipsForSession(session),{compile}=await core();
-    return {snapshot:compile({...session,song},clips),clips,asset_bindings:this.bindings(clips)};
+    const snapshot=compile({...session,song},clips);
+    const byId=new Map(clips.map(c=>[c.id,c]));
+    const usage_token=hash(JSON.stringify([session.id,song.id,session.placements.map(p=>[
+      this.usageTools.videoAliases(byId.get(p.clip_id))[0],p.start_ms,p.end_ms,p.source_in_ms,p.rate
+    ])]));
+    // Only successfully compiled compositions can be marked device-ready.
+    this.usageReceipts.delete(usage_token);this.usageReceipts.set(usage_token,session.placements.map(p=>p.clip_id));
+    if(this.usageReceipts.size>128)this.usageReceipts.delete(this.usageReceipts.keys().next().value);
+    return {snapshot,clips,asset_bindings:this.bindings(clips),usage_token};
+  }
+  recordUse(token){
+    const ids=this.usageReceipts.get(token);
+    if(!ids)throw new Error('Prepare this composition before recording video use.');
+    const operation=async()=>{
+      const next=this.usageTools.recordUsage(this.usage,token,this.catalog.clips,ids);
+      if(next!==this.usage){await atomic(path.join(this.root,'usage.json'),next);this.usage=next;}
+      return this.state();
+    };
+    this.usageSaving=this.usageSaving.catch(()=>{}).then(operation);return this.usageSaving;
   }
   async renderScripts(id){if(!/^[a-f0-9-]{36}$/.test(id))throw new Error('Invalid render ID.');return Object.fromEntries(await Promise.all(Object.entries(AXES).map(async([axis,suffix])=>[axis,await readJSON(path.join(this.root,'renders',id,'session'+suffix+'.funscript'))])));}
   async deleteRender(id){
@@ -357,7 +385,7 @@ class ComposerService {
     await fs.rm(dir,{recursive:true});return {deleted:true};
   }
   async render(session,signal,update=()=>{}){
-    const {snapshot,clips}=await this.prepare(session),song=this.catalog.songs.find(s=>s.id===session.song.id);
+    const {snapshot,clips,usage_token}=await this.prepare(session),song=this.catalog.songs.find(s=>s.id===session.song.id);
     if(!song)throw new Error('Song is not in the catalog. Import it again.');
     const id=randomUUID(),directory=path.join(this.root,'renders',id);await fs.mkdir(directory,{recursive:true});
     const byId=new Map(clips.map(c=>[c.id,c])),{width,height,fps,fit}=snapshot.output,parts=[];let finished=false;
@@ -383,6 +411,7 @@ class ComposerService {
       if(info.width!==width||info.height!==height)throw new Error('Export resolution validation failed.');
       await atomic(path.join(directory,'manifest.json'),{schema:'funciv-render/1',id,session,output:snapshot.output,created_at:new Date().toISOString(),assets:this.bindings(clips),video_sha256:await fileHash(video),duration_ms:info.duration_ms});
       for(const part of parts)await fs.rm(path.join(directory,part));await fs.rm(path.join(directory,'concat.txt'));
+      signal.throwIfAborted();await this.recordUse(usage_token);
       finished=true;return {id,path:video,scriptPath:path.join(directory,'session.funscript'),name:session.name+'.mp4',duration_ms:info.duration_ms,output:snapshot.output};
     }finally{if(!finished)await fs.rm(directory,{recursive:true,force:true});}
   }

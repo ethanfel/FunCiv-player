@@ -23,6 +23,7 @@ function registerComposerIPC(){
     switch(action){
       case 'state':return s.state();
       case 'song':{const result=await dialog.showOpenDialog({title:'Choose a song',properties:['openFile'],filters:[{name:'Audio',extensions:['wav','mp3','flac','m4a','ogg','opus','aac']}]});return result.canceled?null:s.startJob('song',(signal,update)=>s.importSong(result.filePaths[0],signal,update));}
+      case 'beat-audio':{const result=await dialog.showOpenDialog({title:'Choose drums / beat track',properties:['openFile'],filters:[{name:'Audio',extensions:['wav','mp3','flac','m4a','ogg','opus','aac']}]});return result.canceled?null:s.startJob('beat-audio',(signal,update)=>s.importBeatTrack(result.filePaths[0],signal,update));}
       case 'scan':{const result=await dialog.showOpenDialog({title:'Choose a clip library',properties:['openDirectory']});return result.canceled?null:s.startJob('scan',(signal,update)=>s.scan(result.filePaths[0],signal,update));}
       case 'rescan':return s.startJob('scan',(signal,update)=>s.rescan(signal,update));
       case 'fetch-scripts':return s.startJob('scripts',(signal,update)=>s.fetchLocalScripts(payload.ids,signal,update));
@@ -36,6 +37,7 @@ function registerComposerIPC(){
       case 'load':return s.loadSession(payload.id);
       case 'save':return s.saveSession(payload.session);
       case 'prepare':return s.prepare(payload.session);
+      case 'record-use':return s.recordUse(payload.token);
       case 'render':return s.startJob('render',(signal,update)=>s.render(payload.session,signal,update));
       case 'render-scripts':return s.renderScripts(payload.id);
       case 'delete-render':return s.deleteRender(payload.id);

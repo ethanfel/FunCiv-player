@@ -45,8 +45,8 @@ export class KeyboardHandler {
   }
 
   _onKeyDown(e) {
-    // Composer owns its song clock and keyboard controls.
-    if (document.getElementById('app')?.dataset.view === 'composer') return;
+    // Dedicated playback views own their clocks and keyboard controls.
+    if (['composer', 'manga'].includes(document.getElementById('app')?.dataset.view)) return;
     // Don't capture keys when typing in an input
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 

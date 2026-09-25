@@ -53,14 +53,15 @@ export async function checkSectionHandles(page){
 
 export async function checkPopulatedSectionHandle(page){
   const recipe=await state(page);
+  const original=await page.evaluate(()=>{const s=window.app.composer.session;return s.placements.find(p=>p.start_ms===s.sections[1].start_ms);});
   await page.locator('[data-field=snap-audio]').uncheck({force:true});
   await page.locator('.fc-timeline-viewport').evaluate(el=>el.scrollIntoView({block:'center'}));
   await dragBoundary(page,250);
   assert.ok(Math.abs(await end(page)-1250)<=4);
-  assert.ok(await page.evaluate(()=>{
+  assert.ok(await page.evaluate(original=>{
     const s=window.app.composer.session,p=s.placements.find(p=>p.start_ms===s.sections[1].start_ms);
-    return Math.abs(p.source_in_ms-250)<=4&&s.placements.every(p=>p.clip_id)&&s.placements.some(p=>p.start_ms===1000&&p.end_ms===s.sections[0].end_ms);
-  }),'moving a populated boundary keeps clips and source continuity');
+    return Math.abs(p.source_in_ms-(original.source_in_ms+250*original.rate))<=4&&s.placements.every(p=>p.clip_id)&&s.placements.some(p=>p.start_ms===1000&&p.end_ms===s.sections[0].end_ms);
+  },original),'moving a populated boundary keeps clips and source continuity');
   await undo(page);assert.equal(await state(page),recipe,'undo restores all original placements and trims');
   await page.locator('[data-field=snap-audio]').check({force:true});
 }

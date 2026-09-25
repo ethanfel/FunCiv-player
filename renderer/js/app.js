@@ -2,6 +2,7 @@
 
 import { VideoPlayer, PLAYBACK_RATE_PRESETS } from './video-player.js';
 import { ComposerView } from '../composer/composer-view.js';
+import { MangaView } from '../manga/view.js';
 import { eventBus } from './event-bus.js';
 import { ProgressBar } from './progress-bar.js';
 import { FunscriptEngine, isAutoMatch, stripBOM } from './funscript-engine.js';
@@ -2297,6 +2298,9 @@ class App {
       if (evicted.source === 'composer') {
         this.composer?.player.pause();
         this.composer?.devices.release();
+      } else if (evicted.source === 'manga') {
+        this.manga?.player.pause();
+        this.manga?.devices.release();
       } else if (evicted.source === 'vr') {
         // VR companion loses — stop its sync, disconnect the bridge so the
         // user reconnects from the VR panel deliberately.
@@ -3117,7 +3121,7 @@ class App {
    * @returns {object|null} null when filler should not run
    */
   _fillerOptionsForUpload() {
-    if (this.composer?.devices.active) return null; // Composer already resolved its marked gaps.
+    if (this.composer?.devices.active || this.manga?.devices.active) return null; // Prepared readers own their motion gaps.
     const filler = this.settings?.get?.('player.gapFiller') || {};
     if (!filler.enabled) return null;
 
@@ -3146,7 +3150,7 @@ class App {
    * @returns {'started'|'busy'|'no-devices'}
    */
   _startFillerTest(actions, { onProgress, onEnd } = {}) {
-    if (this.composer?.devices.active) return 'busy';
+    if (this.composer?.devices.active || this.manga?.devices.active) return 'busy';
     if (!this._fillerTest) {
       this._fillerTest = new FillerTestPlayer({
         buttplugSync: this.buttplugSync,
@@ -5055,6 +5059,7 @@ class App {
     const map = {
       'library': document.getElementById('library-container'),
       'composer': document.getElementById('composer-container'),
+      'manga': document.getElementById('manga-container'),
       'player': document.getElementById('player-container'),
       'playlists': document.getElementById('playlists-container'),
       'categories': document.getElementById('categories-container'),
@@ -5079,7 +5084,7 @@ class App {
     // keep the player container visible (it floats as a fixed corner
     // overlay over the target view) unless we're navigating INTO the
     // player, which expands it back to full and clears mini mode.
-    for (const vid of ['library', 'player', 'playlists', 'categories', 'composer']) {
+    for (const vid of ['library', 'player', 'playlists', 'categories', 'composer', 'manga']) {
       if (vid === 'player' && this._miniActive && viewId !== 'player') continue;
       const el = this._getViewEl(vid);
       if (el) el.hidden = true;
@@ -5152,7 +5157,13 @@ class App {
       this.navBar.setActive(viewId);
     }
 
-    if (viewId === 'composer') {
+    if (viewId === 'manga') {
+      this.videoPlayer.pause();
+      this._clearMiniplayer();
+      this._getViewEl('player').hidden = true;
+      if (!this.manga) this.manga = new MangaView(this, this._getViewEl('manga'));
+      this.manga.show().catch(error => this.manga.message(error.message, true));
+    } else if (viewId === 'composer') {
       this.videoPlayer.pause();
       this._clearMiniplayer();
       this._getViewEl('player').hidden = true;
@@ -5176,7 +5187,9 @@ class App {
 
   /** Hook called when leaving a view. */
   _onLeaveView(viewId) {
-    if (viewId === 'composer') {
+    if (viewId === 'manga') {
+      this.manga?.hide();
+    } else if (viewId === 'composer') {
       this.composer?.hide();
     } else if (viewId === 'player') {
       // Drop OS fullscreen FIRST, before any of the branches below. Leaving

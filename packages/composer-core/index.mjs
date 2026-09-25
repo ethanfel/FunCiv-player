@@ -1,11 +1,20 @@
 import { evaluate } from '../../vendor/motion-studio/curve.mjs';
 import { spliceActions } from '../../vendor/motion-studio/timeline.mjs';
-import { generateBeatSection } from '../../vendor/motion-studio/audio-patterns.mjs';
+import { musicMotion, validateMusic } from './music.mjs';
+export { createMusic, DEFAULT_MUSIC_SETTINGS, generateMusicBlock, replaceMusicRange, musicMotion } from './music.mjs';
 import { DEFAULT_OUTPUT, outputSettings } from './output.mjs';
 export { DEFAULT_OUTPUT, OUTPUT_PRESETS, outputSettings } from './output.mjs';
 import { sectionCategories, matchesSection, sectionRegions, validateRegionCoverage } from './regions.mjs';
 import { videoIdentities } from './video-identity.mjs';
+import { clipTagIndex, effectiveTagPreferences, tagPreferenceScore, validateTagPreferences } from './tags.mjs';
+import { clipMetadataIndex, matchesSourceFilters, validateSourceFilters } from './source-metadata.mjs';
+export { normalizeSourceMetadata } from './source-metadata.mjs';
+export { normalizeTags, normalizeTagSources } from './tags.mjs';
 import { assignUnique } from './unique-assignment.mjs';
+import { selectionPriorities } from './usage.mjs';
+import { validateFolders } from './folders.mjs';
+import { validateAutoClips, checkAutoSection, balanceAutoClips } from './auto-clips.mjs';
+export { DEFAULT_AUTO_CLIPS } from './auto-clips.mjs';
 export { videoIdentities } from './video-identity.mjs';
 export { sectionCategories, matchesSection, sectionRegions, planRegions, splitRegion, mergeRegion, moveRegionEdge, slipSource, splitSongSection, mergeSongSections, resizeSongSection, normalizeSectionNames } from './regions.mjs';
 export { audioChangeMarkers, snapToAudio, suggestRegionCuts } from './audio-cuts.mjs';
@@ -75,6 +84,9 @@ export function validateSession(session, clips = null) {
     if (!['clip', 'song', 'gaps', 'hold'].includes(s.motion)) throw new Error('Unknown motion policy.');
     if (!Number.isFinite(s.strength) || s.strength < 0 || s.strength > 100) throw new Error('Strength must be 0–100.');
     const categories=sectionCategories(s);
+    validateFolders(s.folders);
+    validateTagPreferences(s.tag_preferences,{section:true});
+    validateSourceFilters(s.source_filters,{section:true});
     if(!Array.isArray(categories)||categories.some(c=>typeof c!=='string'||!c.trim()||c.length>160)||new Set(categories).size!==categories.length)throw new Error('Choose valid, unique folder categories for the section.');
     if(s.planned_regions)validateRegionCoverage(s,sectionRegions(session,s));
     end = s.end_ms;
@@ -87,6 +99,10 @@ export function validateSession(session, clips = null) {
   if (session.include_drafts !== undefined && typeof session.include_drafts !== 'boolean') throw new Error('Include draft scripts must be true or false.');
   if (session.repeat_policy !== undefined && !['never','cycle'].includes(session.repeat_policy)) throw new Error('Choose a valid video repeat policy.');
   outputSettings(session);
+  validateAutoClips(session.auto_clip);
+  validateTagPreferences(session.tag_preferences);
+  validateSourceFilters(session.source_filters);
+  validateMusic(session.music,session.song.duration_ms);
   const byId = clips && new Map(clips.map(c => [c.id, c]));
   const ids = new Set();
   for (const p of session.placements || []) {
@@ -127,18 +143,23 @@ export function arrange(session, clips) {
   validateSession(session);
   const result = clone(session), rng = random(session.seed), placements = [];
   const identities=videoIdentities(clips),key=id=>identities.get(id)||`clip:${id}`,uses=new Map();
+  const priorities=selectionPriorities(clips,clipRating),priority=c=>priorities.get(c.id);
+  const tags=clipTagIndex(clips,identities),preferences=new Map(session.sections.map(s=>[s.id,effectiveTagPreferences(session,s)]));
+  const metadata=clipMetadataIndex(clips,identities),matchesSource=(clip,section)=>matchesSourceFilters(clip,session,section,metadata);
+  const preference=(clip,section)=>tagPreferenceScore(tags.get(clip.id),preferences.get(section.id));
   const remember=id=>uses.set(key(id),(uses.get(key(id))||0)+1),noRepeats=session.repeat_policy!=='cycle';
   // Reserve all kept footage first, including sections later in the song.
   for(const s of session.sections)for(const p of sectionRegions(session,s))if(p.clip_id&&(s.locked||s.planned_regions&&p.locked))remember(p.clip_id);
   let previous = null, index = 0;
   const tasks=[];
   const pools=new Map(session.sections.map(section=>[section.id,clips.filter(c => !c.retired && allowsClipReview(session,c) && c.available !== false && c.duration_ms >= 100 && clipRating(c) >= (session.min_rating ?? 0) &&
-    matchesSection(c,section)&&hasMotionForSection(c,section)).sort((a,b)=>a.id.localeCompare(b.id))]));
+    matchesSection(c,section)&&hasMotionForSection(c,section)&&matchesSource(c,section)).sort((a,b)=>a.id.localeCompare(b.id))]));
   const choose=(eligible,section,at)=>{
     let choices=eligible.filter(c=>!noRepeats||!uses.has(key(c.id)));
     if(!choices.length){const error=new Error(`Cannot fill ${section.label} at ${(at/1000).toFixed(1)} s without repeating a video. Add unique footage or allow matching drafts; your current timeline is unchanged.`);error.code='UNIQUE_FOOTAGE';error.section_id=section.id;throw error;}
     const minimum=Math.min(...choices.map(c=>uses.get(key(c.id))||0));choices=choices.filter(c=>(uses.get(key(c.id))||0)===minimum);
-    const rating=Math.max(...choices.map(clipRating));choices=choices.filter(c=>clipRating(c)===rating);
+    const score=Math.max(...choices.map(priority));choices=choices.filter(c=>priority(c)===score);
+    const tagScore=Math.max(...choices.map(c=>preference(c,section)));choices=choices.filter(c=>preference(c,section)===tagScore);
     const approved=choices.filter(c=>!isDraftClip(c));if(approved.length)choices=approved;
     const alternatives=choices.filter(c=>key(c.id)!==previous);if(alternatives.length)choices=alternatives;
     const groups=[...new Set(choices.map(c=>key(c.id)))],selected=groups[Math.floor(rng()*groups.length)];
@@ -153,43 +174,53 @@ export function arrange(session, clips) {
       validateRegionCoverage(section,existing);
       assertClipRatings({...session, placements:existing}, clips);
       assertClipReviews({...session, placements:existing}, clips);
+      if(existing.some(p=>!matchesSource(clips.find(c=>c.id===p.clip_id)||{},section)))throw new Error(`Unlock ${section.label}: a kept clip is outside its source filters.`);
       placements.push(...clone(existing)); previous=key(existing.at(-1).clip_id); continue;
     }
-    const pool = pools.get(section.id);
-    if (!pool.length&&!section.planned_regions) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check the minimum rating, draft filter and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
+    const pacing=!section.planned_regions?session.auto_clip:undefined;
+    checkAutoSection(section,pacing);
+    const pool = pools.get(section.id).filter(c=>!pacing||c.duration_ms>=pacing.min_ms);
+    if (!pool.length&&!section.planned_regions) throw new Error(`No usable clips for ${section.label}${session.min_rating ? ` at ${session.min_rating}★ or higher` : ''}. Check source filters, minimum rating, drafts and category; resolve videos${['clip','gaps'].includes(section.motion) ? ' with L0 scripts, or use Follow song' : ''}.`);
     if(section.planned_regions){
       validateRegionCoverage(section,existing);
       for(const region of existing){
         if(region.locked&&region.clip_id){
           const c=clips.find(c=>c.id===region.clip_id);
+          if(c&&!matchesSource(c,section))throw new Error('A kept clip is outside this section’s source filters. Unlock it before assembling.');
           if(!c||c.available===false||!allowsClipReview(session,c)||clipRating(c)<(session.min_rating??0)||!matchesSection(c,section)||!hasMotionForSection(c,section))throw new Error('A kept clip no longer matches this section’s category, rating, draft or motion filters. Unlock it before assembling.');
           placements.push(clone(region));previous=key(region.clip_id);continue;
         }
         const required=(region.end_ms-region.start_ms)*region.rate,eligible=pool.filter(c=>c.duration_ms>=required);
-        if(!eligible.length)throw new Error(`No clip is long enough for ${section.label}, ${(region.start_ms/1000).toFixed(2)}–${(region.end_ms/1000).toFixed(2)} s. Shorten or split this region, or select a folder with longer clips.`);
+        if(!eligible.length)throw new Error(`No clip is long enough for ${section.label}, ${(region.start_ms/1000).toFixed(2)}–${(region.end_ms/1000).toFixed(2)} s with the current filters. Check source filters, shorten or split this region, or select a folder with longer clips.`);
         if(noRepeats){tasks.push({section,region,pool:eligible,start_ms:region.start_ms,end_ms:region.end_ms});continue;}
         const clip=choose(eligible,section,region.start_ms);
         placements.push({...clone(region),clip_id:clip.id,source_in_ms:Math.floor(rng()*Math.max(0,clip.duration_ms-required))});
       }
       continue;
     }
-    if(noRepeats){tasks.push({section,pool,start_ms:section.start_ms,end_ms:section.end_ms});continue;}
-    let start = section.start_ms;
+    if(noRepeats){tasks.push({section,pool,pacing,start_ms:section.start_ms,end_ms:section.end_ms});continue;}
+    if(pacing&&new Set(pool.map(c=>key(c.id))).size<2)throw new Error(`${section.label} needs at least two different source videos of ${pacing.min_ms/1000} s or longer. Add footage or use matching drafts.`);
+    let start = section.start_ms,count=0,first=null;
     while (start < section.end_ms) {
-      const clip = choose(pool,section,start);
-      const end = Math.min(section.end_ms, start + Math.floor(clip.duration_ms));
+      const remaining=section.end_ms-start,cap=c=>Math.min(Math.floor(c.duration_ms),pacing?.max_ms??Infinity);
+      const eligible=pool.filter(c=>!pacing||(count!==1||key(c.id)!==first)&&
+        (count<Math.floor((section.end_ms-section.start_ms)/pacing.min_ms)-1||cap(c)>=remaining));
+      if(!eligible.length)throw new Error(`${section.label} cannot fit the available footage within the automatic clip length range. Add longer sources or adjust the range.`);
+      const clip = choose(eligible,section,start);
+      const end = start+Math.min(remaining,cap(clip),pacing&&count===0?remaining-pacing.min_ms:Infinity);
       placements.push({ id: `${section.id}-${index++}`, section_id: section.id, clip_id: clip.id,
         start_ms: start, end_ms: end, source_in_ms: 0, rate: 1 });
-      start = end;
+      start = end;if(count++===0)first=key(clip.id);
       if (placements.length > 5000) throw new Error('Session has too many cuts. Use longer clips.');
     }
   }
-  if(noRepeats)for(const {task,clip,start_ms,end_ms} of assignUnique(tasks,{key,reserved:new Set(uses.keys()),rng,isDraft:isDraftClip,rating:clipRating})){
+  if(noRepeats)for(const {task,clip,start_ms,end_ms} of assignUnique(tasks,{key,reserved:new Set(uses.keys()),rng,isDraft:isDraftClip,rating:priority,preference})){
     const region=task.region;
     placements.push(region?{...clone(region),clip_id:clip.id,source_in_ms:Math.floor(rng()*Math.max(0,clip.duration_ms-(end_ms-start_ms)*region.rate))}:
       {id:`${task.section.id}-${index++}`,section_id:task.section.id,clip_id:clip.id,start_ms,end_ms,source_in_ms:0,rate:1});
     if(placements.length>5000)throw new Error('Session has too many cuts. Use longer clips.');
   }
+  balanceAutoClips(placements,session.sections,session.auto_clip);
   result.placements = placements.sort((a,b)=>a.start_ms-b.start_ms);
   delete result.asset_bindings; // A deliberate reassembly adopts the current catalog.
   validateSession(result, clips);
@@ -207,9 +238,7 @@ export function validateCoverage(session) {
 }
 
 function songMotion(session,section,start,end){
-  if(!session.analysis)throw new Error('Analyze the song before generating song motion, including Audio sync clips.');
-  return generateBeatSection({analysis:session.analysis,offset_ms:0},start,end,{mode:'manual',shape:'Sine Wave',timing:'tempo',
-    bpm:session.bpm||session.analysis.bpm||120,amplitude:section.strength/2,center:50,followEnergy:true,seed:session.seed}).actions;
+  return musicMotion(session,start,end,section.strength);
 }
 
 export function compile(session, clips) {

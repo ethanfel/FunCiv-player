@@ -21,7 +21,9 @@
     "vault:check": "node scripts/vault-freshness.mjs",
     "vault:stamp": "node scripts/vault-freshness.mjs --stamp",
     "test:composer": "node --test --test-isolation=none tests/composer/*.test.mjs",
-    "test:composer:ui": "node tests/composer/smoke.mjs"
+    "test:composer:ui": "node tests/composer/smoke.mjs",
+    "test:manga": "node --test --test-isolation=none tests/manga/*.test.mjs",
+    "test:manga:ui": "node tests/manga/smoke.mjs"
   },
   "keywords": [
     "video-player",
@@ -33,6 +35,8 @@
   "license": "GPL-3.0-or-later",
   "private": true,
   "dependencies": {
+    "archiver": "5.3.2",
+    "yauzl": "2.10.0",
     "@ohdoki/handy-sdk": "^2.3.4",
     "@xsense/autoblow-sdk": "^2.1.1",
     "buttplug": "^4.0.1",

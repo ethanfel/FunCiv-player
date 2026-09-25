@@ -122,6 +122,7 @@
     "popoutWindowTitle": "Audience Room"
   },
   "nav": {
+    "manga": "Manga",
     "composer": "Composer",
     "library": "Library",
     "playlists": "Playlists",
@@ -1447,7 +1448,8 @@
     "source": {
       "web-remote": "Web Remote",
       "vr": "VR Companion",
-      "composer": "Composer"
+      "composer": "Composer",
+      "manga": "Manga"
     },
     "card": {
       "showAria": "Show session card",

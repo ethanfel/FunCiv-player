@@ -15,7 +15,7 @@
 const HISTORY_KEY = 'sessions.history';
 const HISTORY_MAX = 50;
 
-/** @typedef {'web-remote' | 'vr' | 'composer'} SessionSource */
+/** @typedef {'web-remote' | 'vr' | 'composer' | 'manga'} SessionSource */
 /** @typedef {'idle' | 'preparing' | 'playing' | 'paused' | 'no-script' | 'error'} SessionState */
 
 /**

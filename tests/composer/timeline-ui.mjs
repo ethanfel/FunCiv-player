@@ -1,5 +1,50 @@
 import assert from 'node:assert/strict';
 
+export async function checkFolderCollections(page,screenshot){
+  await page.evaluate(()=>{
+    const c=window.app.composer;c.folderTestOriginal={catalog:c.catalog,session:c.session,history:c.history,dirty:c.dirty};
+    const base={duration_ms:6000,available:true,script_ready:true,review_status:'local'};
+    const local={...base,id:'september',name:'September video',civitai_id:'42',path:'/collection/September_2026/Pulse/video.mp4',categories:['Pulse']};
+    c.catalog={...c.catalog,roots:['/collection','/collection/September_2026'],clips:[
+      local,{...local,id:'hf-september',origin:'dataset',local_video_id:local.id,review_status:'draft',category_paths:['September_2026/Pulse']},
+      {...base,id:'goblin',name:'Goblin video',path:'/collection/Goblin/Pulse/video.mp4',categories:['Goblin/Pulse']},
+      {...base,id:'older',name:'Older video',path:'/collection/September_old/Flow/video.mp4',categories:['Flow']},
+    ]};
+    c.session=structuredClone(c.session);c.session.min_rating=0;c.session.sections[0].categories=[];c.session.sections[0].folders=[];c.selected=0;c.renderEditor();
+  });
+  await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
+  const input=path=>page.locator(`.fc-folder-tree input[value='${JSON.stringify(['local',path])}']`);
+  assert.equal(await input('/collection/September_2026').count(),1,'nested scan root appears once');
+  assert.equal(await page.locator('.fc-folder-choices input[value=Pulse]').count(),1,'category aliases share one row');
+  assert.ok((await page.locator('.fc-pool-summary').textContent()).includes('3 unique videos selected · 4 catalog records grouped'));
+  await input('/collection/September_2026').check();
+  assert.equal(await page.locator('.fc-folder-choices input[value=Flow]').count(),0,'categories follow the selected collection');
+  assert.ok((await page.locator('.fc-pool-summary').textContent()).includes('1 ready / 1 unique videos selected'));
+  await page.locator('.fc-folder-choices input[value=Pulse]').check();
+  await page.locator('[name=category-search]').fill('missing');
+  assert.equal(await page.locator('.fc-folder-choices input').count(),0);
+  await page.locator('[name=category-search]').press('Enter');
+  assert.equal(await page.locator('.fc-folder-dialog[open]').count(),1,'Enter in search does not submit or index a folder');
+  await page.locator('[name=category-search]').fill('');assert.equal(await page.locator('.fc-folder-choices input[value=Pulse]').isChecked(),true,'search preserves choices');
+  const viewport=page.viewportSize();await page.setViewportSize({width:828,height:940});
+  assert.ok(await page.locator('.fc-folder-dialog').evaluate(el=>{
+    const r=el.getBoundingClientRect(),button=el.querySelector('[value=apply]').getBoundingClientRect();
+    return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&button.bottom<=r.bottom;
+  }),'dialog and Apply stay inside viewport');
+  await page.screenshot({path:screenshot});await page.setViewportSize(viewport);
+  await page.locator('.fc-folder-dialog [value=apply]').click();
+  await page.waitForFunction(()=>!document.querySelector('.fc-folder-dialog'));
+  assert.deepEqual(await page.evaluate(()=>window.app.composer.session.sections[0].folders),[{source:'local',path:'/collection/September_2026'}]);
+  assert.ok((await page.locator('.fc-selection-bar').textContent()).includes('September_2026'));
+  await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
+  assert.equal(await input('/collection/September_2026').isChecked(),true,'scope restored when reopening');
+  await page.locator('[name=clear]').click();await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>!document.querySelector('.fc-folder-dialog'));
+  assert.deepEqual(await page.evaluate(()=>window.app.composer.session.sections[0].folders),[{source:'local',path:'/collection/September_2026'}],'Escape cancels scope changes');
+  await page.evaluate(()=>{const c=window.app.composer;Object.assign(c,c.folderTestOriginal);delete c.folderTestOriginal;c.renderEditor();});
+  console.log('PASS: nested folder tree, scoped categories, unique-video counts, search, compact dialog, Apply/reopen and Escape.');
+}
+
 export async function checkLibraryReadiness(page,screenshot){
   const previous=await page.evaluate(()=>{
     const c=window.app.composer,old={roots:c.catalog.roots,view:c.root.querySelector('[data-field=library-view]').value,selected:c.clipLibrary.selected};
@@ -19,12 +64,12 @@ export async function checkLibraryReadiness(page,screenshot){
   assert.equal(await page.locator('.fc-clip-details [data-action=fetch-scripts]').textContent(),'Get HF scripts');
   assert.equal(await page.locator('.fc-clip-details [data-action=resolve]').count(),0,'linked video offers scripts only');
   await page.locator('.fc-selection-bar [data-action=section-folders]').click({force:true});
-  assert.ok((await page.locator('.fc-folder-help').textContent()).includes('No local folder indexed'));
-  assert.ok((await page.locator('.fc-folder-help').textContent()).includes('drafts excluded'));
+  assert.ok((await page.locator('.fc-folder-help').textContent()).includes('No local folders indexed'));
+  assert.ok((await page.locator('.fc-folder-header').textContent()).includes('drafts excluded'));
   const folder=category=>page.locator('.fc-folder-choices label').filter({has:page.locator(`input[value="${category}"]`)});
-  assert.ok((await folder('Pulse').textContent()).includes('video not linked'));
-  assert.ok((await folder('Draft').textContent()).includes('drafts excluded'));
-  assert.ok((await folder('Pending scripts').textContent()).includes('1 needs HF scripts'));
+  assert.ok((await folder('Pulse').getAttribute('title')).includes('video not linked'));
+  assert.ok((await folder('Draft').getAttribute('title')).includes('drafts excluded'));
+  assert.ok((await folder('Pending scripts').getAttribute('title')).includes('1 needs HF scripts'));
   assert.equal(await page.locator('.fc-folder-dialog button[value=index]').count(),1);
   assert.ok(!(await page.locator('.fc-folder-choices').textContent()).includes('eligible'));
   await page.screenshot({path:screenshot});
@@ -92,11 +137,11 @@ export async function chooseSectionFolders(page){
   const viewport=page.viewportSize();
   for(const size of [viewport,{width:828,height:815}]){
     await page.setViewportSize(size);
-    const rows=await page.locator('.fc-folder-dialog .fc-check').evaluateAll(labels=>labels.map(label=>{
+    const rows=await page.locator('.fc-folder-choices .fc-check,.fc-folder-dialog .fc-pool-all').evaluateAll(labels=>labels.map(label=>{
       const row=label.getBoundingClientRect(),box=label.querySelector('input').getBoundingClientRect(),text=label.querySelector('span')?.getBoundingClientRect();
       return {height:row.height,boxWidth:box.width,boxHeight:box.height,textWidth:text?.width};
     }));
-    assert.ok(rows.every(row=>row.boxWidth<=24&&row.boxHeight<=24&&row.height<80&&(row.textWidth===undefined||row.textWidth>200)),`folder labels stay readable beside compact checkboxes at ${size.width}×${size.height}: ${JSON.stringify(rows)}`);
+    assert.ok(rows.every(row=>row.boxWidth<=24&&row.boxHeight<=24&&row.height<80&&(row.textWidth===undefined||row.textWidth>140)),`folder labels stay readable beside compact checkboxes at ${size.width}×${size.height}: ${JSON.stringify(rows)}`);
   }
   await page.setViewportSize(viewport);
   await page.locator('.fc-folder-dialog input[value=Pulse]').check({force:true});

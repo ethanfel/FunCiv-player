@@ -1,8 +1,8 @@
 // Fixed cuts use weighted augmenting-path matching. Automatic clip lengths additionally
 // require a duration search; its explicit stack avoids recursion on long songs.
 // A work limit is reported separately from an actual footage shortage.
-export function assignUnique(tasks,{key,reserved,rng,isDraft,rating=()=>0,workLimit=2000000}){
-  const used=new Set(reserved),starts=tasks.map(t=>t.start_ms),chosen=[];
+export function assignUnique(tasks,{key,reserved,rng,isDraft,rating=()=>0,preference=()=>0,workLimit=2000000}){
+  const used=new Set(reserved),starts=tasks.map(t=>t.start_ms),counts=tasks.map(()=>0),chosen=[];
   let work=0,failed=tasks[0];
   const spend=()=>{
     if(++work>workLimit){const error=new Error('Assembly reached its search limit. Try more footage, narrower folder pools, or fixed clip regions; your timeline is unchanged.');error.code='ASSEMBLY_SEARCH_LIMIT';throw error;}
@@ -12,54 +12,61 @@ export function assignUnique(tasks,{key,reserved,rng,isDraft,rating=()=>0,workLi
     for(const clip of task.pool){
       const id=key(clip.id);if(reserved.has(id))continue;
       if(!groups.has(id))groups.set(id,[]);
-      groups.get(id).push({clip,rank:rng()});
+      groups.get(id).push({clip,rank:rng(),preference:preference(clip,task.section)});
     }
     return [...groups].map(([id,variants])=>({id,rank:rng(),variants}));
   });
-  const length=c=>Math.floor(c.duration_ms);
+  const length=(c,i)=>Math.min(Math.floor(c.duration_ms),tasks[i].pacing?.max_ms??Infinity);
   function candidates(i){
     const task=tasks[i],remaining=task.end_ms-starts[i],options=[];
     let capacity=0,minimum=Infinity;
     const lengths=[];
     for(const group of pools[i]){
       spend();if(used.has(group.id))continue;
-      const variants=[...group.variants].sort((a,b)=>rating(b.clip)-rating(a.clip)||Number(isDraft(a.clip))-Number(isDraft(b.clip))||
-        (task.region?0:Math.min(remaining,length(b.clip))-Math.min(remaining,length(a.clip)))||a.rank-b.rank);
+      const variants=[...group.variants].sort((a,b)=>rating(b.clip)-rating(a.clip)||b.preference-a.preference||Number(isDraft(a.clip))-Number(isDraft(b.clip))||
+        (task.region?0:Math.min(remaining,length(b.clip,i))-Math.min(remaining,length(a.clip,i)))||a.rank-b.rank);
       // Prefer the highest-rated variant, but keep longer alternatives when
       // their extra coverage could be needed to finish without repeating.
       let covered=-1;
       for(const v of variants){
-        const coverage=Math.min(remaining,length(v.clip));if(coverage<=covered)continue;
-        options.push({i,key:group.id,clip:v.clip,rank:group.rank,draft:isDraft(v.clip),rating:rating(v.clip)});
+        const coverage=Math.min(remaining,length(v.clip,i));if(coverage<=covered)continue;
+        options.push({i,key:group.id,clip:v.clip,rank:group.rank,draft:isDraft(v.clip),rating:rating(v.clip),preference:v.preference});
         covered=coverage;if(task.region)break;
       }
-      const longest=Math.max(...variants.map(v=>length(v.clip)));
-      capacity+=longest;lengths.push(longest);minimum=Math.min(minimum,...variants.map(v=>length(v.clip)));
+      const longest=Math.max(...variants.map(v=>length(v.clip,i)));
+      capacity+=longest;lengths.push(longest);minimum=Math.min(minimum,...variants.map(v=>length(v.clip,i)));
     }
-    options.sort((a,b)=>b.rating-a.rating||Number(a.draft)-Number(b.draft)||a.rank-b.rank);
+    options.sort((a,b)=>b.rating-a.rating||b.preference-a.preference||Number(a.draft)-Number(b.draft)||a.rank-b.rank);
     if(!options.length||!task.region&&capacity<remaining){failed=task;return null;}
     let need=remaining,count=0;
     for(const duration of lengths.sort((a,b)=>b-a)){need-=duration;count++;if(need<=0)break;}
-    return {i,options,single:!!task.region||minimum>=remaining,count:task.region?1:count,unique:lengths.length};
+    if(task.pacing){
+      count=Math.max(count,2-counts[i]);
+      if(counts[i]+count>Math.floor((task.end_ms-task.start_ms)/task.pacing.min_ms)){failed=task;return null;}
+    }
+    return {i,options,single:!!task.region||minimum>=remaining&&(!task.pacing||counts[i]>=1),count:task.region?1:count,unique:lengths.length};
   }
   function match(requests){
     const owners=new Map(),assigned=new Map(),byTask=new Map(requests.map(r=>[r.i,r]));
-    // Maximize total note across fixed cuts, then prefer reviewed variants,
-    // then seeded tie-breaking. Integer weights keep residual costs exact.
-    const reviewWeight=1024*requests.length+1,ratingWeight=(requests.length+1)*reviewWeight;
-    const score=o=>o.rating*ratingWeight+(o.draft?0:reviewWeight)+Math.floor((1-o.rank)*1024);
+    // Rating adjusted for recent use stays first, then tag preferences,
+    // reviewed variants and seeded ties. BigInt retains that ordering even
+    // with 5000 cuts; large tag sums must never outweigh one rating point.
+    let low=0,high=0;for(const r of requests)for(const o of r.options){low=Math.min(low,o.preference);high=Math.max(high,o.preference);}
+    const count=BigInt(requests.length),reviewWeight=1024n*count+1n,tagWeight=(count+1n)*reviewWeight;
+    const ratingWeight=(BigInt(high-low)*count+1n)*tagWeight;
+    const score=o=>BigInt(o.rating)*ratingWeight+BigInt(o.preference-low)*tagWeight+(o.draft?0n:reviewWeight)+BigInt(Math.floor((1-o.rank)*1024));
     for(const request of [...requests].sort((a,b)=>a.unique-b.unique||a.i-b.i)){
-      let free=null,best=Infinity;
-      const queue=[request.i],queued=new Set(queue),distance=new Map([[request.i,0]]),parents=new Map([[request.i,null]]);
+      let free=null,best=null;
+      const queue=[request.i],queued=new Set(queue),distance=new Map([[request.i,0n]]),parents=new Map([[request.i,null]]);
       // Shortest augmenting path in the residual assignment graph. Unlike a
       // first-free search, this can reroute an earlier cut to keep better clips.
       for(let head=0;head<queue.length;head++){
         const i=queue[head];queued.delete(i);
         for(const option of byTask.get(i).options){
           spend();const cost=distance.get(i)-score(option);
-          if(!owners.has(option.key)){if(cost<best){best=cost;free=option;}continue;}
+          if(!owners.has(option.key)){if(best===null||cost<best){best=cost;free=option;}continue;}
           const owner=owners.get(option.key),nextCost=cost+score(assigned.get(owner));
-          if(nextCost<(distance.get(owner)??Infinity)){
+          if(!distance.has(owner)||nextCost<distance.get(owner)){
             distance.set(owner,nextCost);parents.set(owner,option);
             if(!queued.has(owner)){queue.push(owner);queued.add(owner);}
           }
@@ -87,15 +94,17 @@ export function assignUnique(tasks,{key,reserved,rng,isDraft,rating=()=>0,workLi
   if(first?.solution)return first.solution;
   while(stack.length){
     const frame=stack.at(-1);
-    if(frame.assignment){const a=frame.assignment;used.delete(a.key);starts[a.i]=a.start_ms;chosen.pop();frame.assignment=null;}
+    if(frame.assignment){const a=frame.assignment;used.delete(a.key);starts[a.i]=a.start_ms;counts[a.i]--;chosen.pop();frame.assignment=null;}
     if(frame.index===frame.options.length){stack.pop();continue;}
     spend();const option=frame.options[frame.index++],task=tasks[option.i],start_ms=starts[option.i];
-    const assignment={...option,task,start_ms,end_ms:task.region?task.end_ms:Math.min(task.end_ms,start_ms+length(option.clip))};
-    frame.assignment=assignment;chosen.push(assignment);used.add(option.key);starts[option.i]=assignment.end_ms;
+    const cap=task.pacing&&counts[option.i]===0?task.end_ms-start_ms-task.pacing.min_ms:Infinity;
+    const assignment={...option,task,start_ms,end_ms:task.region?task.end_ms:Math.min(task.end_ms,start_ms+Math.min(length(option.clip,option.i),cap))};
+    frame.assignment=assignment;chosen.push(assignment);used.add(option.key);starts[option.i]=assignment.end_ms;counts[option.i]++;
     const next=inspect();if(!next)continue;
     if(next.solution)return [...chosen,...next.solution];
     stack.push(next);
   }
-  const error=new Error(`Cannot fill ${failed?.section.label||'this song'} without repeating a video. Add unique footage or allow matching drafts; your current timeline is unchanged.`);
+  const pace=failed?.pacing;
+  const error=new Error(`Cannot fill ${failed?.section.label||'this song'} without repeating a video${pace?` using ${pace.min_ms/1000}–${pace.max_ms/1000} s clips and at least two different sources`:''}. Add unique footage or allow matching drafts${pace?', or adjust the automatic clip range':''}; your current timeline is unchanged.`);
   error.code='UNIQUE_FOOTAGE';error.section_id=failed?.section.id;throw error;
 }

@@ -33,6 +33,7 @@ export class NavBar {
     // key, not the string, so the label is always current.
     this._items = [
       { id: 'composer', labelKey: 'nav.composer', iconNode: Music },
+      { id: 'manga', labelKey: 'nav.manga', iconNode: Library },
       { id: 'library', labelKey: 'nav.library', iconNode: Library },
       { id: 'playlists', labelKey: 'nav.playlists', iconNode: ListVideo },
       { id: 'categories', labelKey: 'nav.categories', iconNode: Tag },

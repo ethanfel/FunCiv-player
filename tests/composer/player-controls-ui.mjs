@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+
+export async function checkPlayerControls(page,until,screenshots){
+  const player=page.locator('.fc-player');
+  assert.equal(await player.locator('[data-action=devices]').count(),1);
+  assert.equal(await player.locator('[data-action=devices]').isDisabled(),true);
+  assert.equal(await player.locator('[data-device-status]').textContent(),'No device connected');
+  assert.equal(await page.locator('.fc-footer [data-action=devices]').count(),0,'sync controls belong with playback');
+  await player.locator('[data-action=connections]').click({force:true});
+  await until(()=>window.app.connectionPanel._visible);
+  await page.keyboard.press('Escape');await until(()=>!window.app.connectionPanel._visible);
+  await player.locator('[data-action=mute]').click({force:true});
+  assert.equal(await page.evaluate(()=>window.app.composer.player.audio.muted),true);
+  await player.locator('[data-field=volume]').fill('0.4');await player.locator('[data-field=volume]').dispatchEvent('input');
+  assert.ok(await page.evaluate(()=>{const a=window.app.composer.player.audio;return !a.muted&&a.volume===.4;}));
+  await player.locator('[data-action=seek-forward]').click({force:true});
+  assert.ok(await page.evaluate(()=>window.app.composer.player.audio.currentTime>5.9));
+  await player.locator('[data-action=seek-back]').click({force:true});
+  await until(()=>!window.app.composer.player.aligning);
+  assert.equal(await page.evaluate(()=>window.app.composer.player.audio.currentTime),0);
+  await player.evaluate(el=>el.scrollIntoView({block:'start'}));
+  await page.screenshot({path:path.join(screenshots,'composer-player.png')});
+  await page.evaluate(()=>{const c=window.app.composer;c.player.audio.loop=true;window.fullscreenAudio=c.player.audio;window.fullscreenVideos=[...c.player.videos];window.fullscreenSnapshot=c.player.snapshot;});
+  await player.locator('[data-action=play]').click({force:true});await until(()=>!window.app.composer.player.audio.paused);
+  await player.locator('[data-action=fullscreen]').click({force:true});await until(()=>document.fullscreenElement===document.querySelector('.fc-player'));
+  await until(()=>{const c=window.app.composer;return c.player.intent&&!c.player.audio.paused;});
+  assert.ok(await page.evaluate(()=>{const c=window.app.composer;return c.player.audio===window.fullscreenAudio&&c.player.videos.every((v,i)=>v===window.fullscreenVideos[i])&&c.player.snapshot===window.fullscreenSnapshot;}),'fullscreen preserves the clock, decoders and prepared script');
+  const geometry=await page.evaluate(()=>{
+    const shell=document.querySelector('.fc-player').getBoundingClientRect(),stage=document.querySelector('.fc-preview-stage').getBoundingClientRect(),frame=document.querySelector('.fc-preview').getBoundingClientRect(),bar=document.querySelector('.fc-device-bar').getBoundingClientRect();
+    return {height:shell.height,stageHeight:stage.height,frameRatio:frame.width/frame.height,inside:frame.width<=stage.width+1&&frame.height<=stage.height+1,controlsVisible:bar.bottom<=shell.bottom+1};
+  });
+  assert.ok(geometry.stageHeight>geometry.height*.45&&geometry.inside&&geometry.controlsVisible&&Math.abs(geometry.frameRatio-9/16)<.005,JSON.stringify(geometry));
+  await page.screenshot({path:path.join(screenshots,'composer-fullscreen.png')});
+  await player.locator('[data-action=play]').focus();await page.keyboard.press('Space');
+  assert.equal(await page.evaluate(()=>window.app.composer.player.intent),false);
+  await page.keyboard.press('m');assert.equal(await page.evaluate(()=>window.app.composer.player.audio.muted),true);
+  await page.keyboard.press('m');assert.equal(await page.evaluate(()=>window.app.composer.player.audio.muted),false);
+  await page.keyboard.press('Escape');await until(()=>!document.fullscreenElement);
+  await page.keyboard.press('f');await until(()=>document.fullscreenElement===document.querySelector('.fc-player')&&window.app.connectionPanel._panel.parentElement===document.fullscreenElement);
+  await player.locator('[data-action=connections]').click({force:true});
+  await until(()=>document.fullscreenElement===document.querySelector('.fc-player')&&window.app.connectionPanel._visible);
+  assert.ok(await page.evaluate(()=>window.app.connectionPanel._panel.contains(document.activeElement)),'the device panel owns keyboard focus');
+  await page.keyboard.press('Escape');await until(()=>!window.app.connectionPanel._visible);
+  await player.locator('[data-action=fullscreen]').click({force:true});await until(()=>!document.fullscreenElement);
+  const stage=player.locator('.fc-preview-stage');await stage.dblclick({force:true});await until(()=>document.fullscreenElement===document.querySelector('.fc-player'));
+  assert.equal(await page.evaluate(()=>window.app.composer.player.intent),false,'double-click enters fullscreen without starting playback');
+  await player.locator('[data-action=fullscreen]').click({force:true});await until(()=>!document.fullscreenElement);
+  await page.setViewportSize({width:700,height:1000});
+  assert.equal(await player.locator('[data-field=volume]').isVisible(),true);
+  assert.equal(await player.locator('[data-field=playback-mode]').isVisible(),true);
+  assert.ok(await player.evaluate(el=>el.scrollWidth<=el.clientWidth+1),'player controls fit a narrow layout');
+  await player.evaluate(el=>el.scrollIntoView({block:'start'}));await page.screenshot({path:path.join(screenshots,'composer-player-narrow.png')});
+  await page.setViewportSize({width:1500,height:1080});
+  await page.evaluate(async()=>{
+    const c=window.app.composer;c.player.audio.loop=false;c.player.audio.volume=.6;c.root.querySelector('[data-field=volume]').value=.6;c.player.pause();await c.player.seek(0);
+    delete window.fullscreenAudio;delete window.fullscreenVideos;delete window.fullscreenSnapshot;
+  });
+  console.log('PASS: visible device setup, fullscreen/exit/F/Escape/double-click, unchanged audio and video elements, play/pause, mute, seeking, portrait geometry and responsive controls.');
+}

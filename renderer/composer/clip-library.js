@@ -1,5 +1,6 @@
 import { clipRating, clipIntensity, isDraftClip, isAudioSyncClip } from '../../packages/composer-core/index.mjs';
 import { libraryVideoLabel } from './clip-readiness.js';
+import { sourceMetadataHTML } from './source-filters.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const stamp=ms=>`${Math.floor(ms/60000)}:${(ms/1000%60).toFixed(1).padStart(4,'0')}`;
 const stars=n=>n?`${n}★`:'Unrated';
@@ -17,11 +18,14 @@ export class ClipLibrary {
     }).join('')||`<p class="fc-empty">${esc(empty)}</p>`;
     list.scrollTop=scroll;
     const clip=clips.find(c=>c.id===this.selected),details=v.root.querySelector('.fc-clip-details');details.hidden=!clip;if(!clip){details.innerHTML='';return;}
-    const rating=clipRating(clip),intensity=clipIntensity(clip),override=clip.user_rating!==undefined;
+    const rating=clipRating(clip),intensity=clipIntensity(clip),override=clip.user_rating!==undefined,tags=v.tagIndex?.get(clip.id)||clip.tags||[];
     const choices=[['',clip.origin==='dataset'?`Dataset rating (${stars(clipRating({quality:clip.quality}))})`:'No local rating'],...Array.from({length:6},(_,n)=>[String(n),stars(n)])];
     details.innerHTML=`<div class="fc-panel-heading"><h3>Selected clip</h3><span>${isDraftClip(clip)?'Draft · unreviewed':esc(clip.review_status||'Local')}</span></div><strong class="fc-detail-title">${esc(clip.name)}</strong>
       <div class="fc-file-status"><strong>${clip.available?'Local video linked':clip.path?'Local video unavailable':'Video not linked'}</strong><small>${clip.path?esc(clip.path):'Already on disk? Index its folder with ＋ Folder.'}</small><small>${clip.script_ready?'Motion scripts ready':isAudioSyncClip(clip)?'Uses song motion':clip.remote_scripts?.L0?'Scripts published on HF · not loaded locally':'No L0 motion script available'}</small></div>
       ${clip.retired?'<p>Retired HF variant · retained for this session. New assemblies use current variants.</p>':''}
+      <small class="fc-usage-note">${clip.usage?.count?`Used in ${clip.usage.count} completed composition${clip.usage.count===1?'':'s'} · Selection weight ${clip.usage.weight}%${clip.usage.recovery_remaining?` · Full weight after ${clip.usage.recovery_remaining} more`:''}`:'No recorded use · Selection weight 100%'}</small>
+      ${sourceMetadataHTML(clip,v.sourceIndex)}
+      <details class="fc-detail-tags"><summary>Tags · ${tags.length}</summary><div>${tags.map(tag=>`<span>${esc(tag)}</span>`).join('')||'<small>No published tags. Sync FunCiv Data to refresh metadata.</small>'}</div><small>Published labels are shared across linked records of this video. Find them with the library search; use Session tags to guide selection.</small></details>
       ${clip.origin==='dataset'?`<div class="fc-intensity"><small>Intensity: ${intensity?`${intensity}/5 · ${clip.intensity_mode==='auto'?'Automatic estimate':'Author rating'}`:'Unrated'}</small><small>Stored for future song matching.</small></div>`:''}
       ${isAudioSyncClip(clip)?'<p class="fc-audio-sync-note">Audio sync · uses song-generated strokes during its video region. Analyze the song first. Neutral hold overrides this.</p>':''}
       <div class="fc-detail-fields"><label>Your rating<select data-field="rating" data-id="${esc(clip.id)}" aria-label="Rating for ${esc(clip.name)}">${choices.map(([value,label])=>`<option value="${value}" ${value===(override?String(clip.user_rating):'')?'selected':''}>${esc(label)}</option>`).join('')}</select></label><label>Folder / category<input data-field="tag" data-id="${esc(clip.id)}" value="${esc(clip.categories?.[0]||'Uncategorized')}"></label></div>

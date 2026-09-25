@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 
 export async function checkDraftAssembly(page,until){
-  await page.evaluate(()=>{
+  await page.evaluate(async()=>{
     const c=window.app.composer;
     window.beforeDraftAssembly={session:c.session,clips:c.catalog.clips,history:c.history,selected:c.selected,dirty:c.dirty,job:c.job};
     c.session=structuredClone(c.session);c.session.sections=c.session.sections.slice(0,3).map((s,i)=>({...s,start_ms:i*2000,end_ms:(i+1)*2000,categories:['Draft test'],category:undefined}));
     c.session.placements=[];c.session.include_drafts=false;c.session.repeat_policy='never';c.session.min_rating=4;c.selected=0;
+    // Deliberate two-second manual regions isolate draft consent from pacing.
+    const {planRegions}=await import('./../packages/composer-core/index.mjs');
+    for(const section of c.session.sections)c.session=planRegions(c.session,section.id,[]);
     c.catalog.clips=['A.mp4','B.mp4','C.mp4'].map((name,i)=>({...c.catalog.clips.find(clip=>clip.name===name),id:`draft-test-${i}`,origin:i?'dataset':'local',review_status:i?'draft':'local',audio_sync:false,quality:5,user_rating:5,script_ready:true,categories:['Draft test']}));
     c.renderEditor();
   });
@@ -17,8 +20,9 @@ export async function checkDraftAssembly(page,until){
   await page.locator('.fc-draft-assembly button[value=cancel]').click();
   assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session)),before);
   await page.locator('[data-action=assemble]').click({force:true});await page.locator('.fc-draft-assembly button[value=accept]').click();
-  await until(()=>window.app.composer.session.placements.length===3);
-  assert.ok(await page.evaluate(()=>{const s=window.app.composer.session;return s.include_drafts&&s.min_rating===4&&s.repeat_policy==='never'&&new Set(s.placements.map(p=>p.clip_id)).size===3;}));
+  await until(()=>{const s=window.app.composer.session;return s.include_drafts&&s.placements.length===3&&s.placements.every(p=>p.clip_id);});
+  const accepted=await page.evaluate(()=>{const s=window.app.composer.session;return {drafts:s.include_drafts,minimum:s.min_rating,repeats:s.repeat_policy,clips:s.placements.map(p=>p.clip_id)};});
+  assert.deepEqual({drafts:accepted.drafts,minimum:accepted.minimum,repeats:accepted.repeats,unique:new Set(accepted.clips).size},{drafts:true,minimum:4,repeats:'never',unique:3},JSON.stringify(accepted));
   await page.locator('[data-action=undo]').click({force:true});assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session)),before,'one undo restores placement and draft consent');
   // Exercise the scripts-only path with a controlled asynchronous download failure.
   await page.evaluate(()=>{
@@ -36,7 +40,7 @@ export async function checkDraftAssembly(page,until){
     const c=window.app.composer;c.job=async(action,payload)=>{for(const id of payload.ids)c.catalog.clips.find(clip=>clip.id===id).script_ready=true;return {count:payload.ids.length,warnings:[]};};
   });
   await page.locator('[data-action=assemble]').click({force:true});await page.locator('.fc-draft-assembly button[value=accept]').click();
-  await until(()=>window.app.composer.session.placements.length===3);
+  await until(()=>{const s=window.app.composer.session;return s.include_drafts&&s.placements.length===3&&s.placements.every(p=>p.clip_id);});
   assert.ok(await page.evaluate(()=>window.app.composer.session.include_drafts));
   await page.locator('[data-action=undo]').click({force:true});assert.equal(await page.evaluate(()=>JSON.stringify(window.app.composer.session)),before);
   await page.evaluate(()=>{

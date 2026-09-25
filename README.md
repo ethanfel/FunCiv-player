@@ -4,6 +4,8 @@ Compose a session from **a song → sections → categories → video clips and 
 
 This is an early working fork of [FunSync Player](https://github.com/DaveMakesWaves/funsync-player). It adds a **Composer** workspace and reuses the player, device transports, and selected audio/curve algorithms from [ComfyUI-Sam3D-to-Funscript](https://github.com/ethanfel/ComfyUI-Sam3D-to-Funscript). The original Library, Playlists, Categories, and video player remain available.
 
+The **Manga** tab opens H3 Animator projects as interactive pages with clickable animations, switchable speech bubbles, guided playback, panel loops, and rhythm-preserving motion extensions. It also exports self-contained `.fcmanga` books and small script/presentation updates. See the [manga reader guide](docs/MANGA_READER.md).
+
 ![Composer with synthetic test media](docs/composer-implemented.png)
 
 ## Run locally
@@ -65,6 +67,8 @@ The timeline supports continuous **1×–256× zoom** with its slider, preset se
 
 Moving a section boundary keeps existing video timing and source portions. Footage crossing the new boundary is split with continuous source timing; incompatible clips transferred into another category pool become empty regions for reassignment. Other sections remain unchanged.
 
+**Recent-use recovery:** successful exports and successful **Prepare device sync** record the source videos locally. Ordinary previews, edits and failed/cancelled jobs do not count. A used video's selection weight drops to 20%, then recovers by 16 percentage points per other completed composition, reaching 100% after five. The selection score is `(stars + 1) × weight`; stars and minimum-rating filters stay unchanged. This is a priority weight, not a literal random probability. Recent clips remain eligible when needed. Local copies and linked HF variants share history; Assemble, Replace clip and Remake section use it. Kept placements remain fixed. Re-preparing or exporting the same session and video cut list counts once, including after restart; changing only its name or beat script does not count again. A new session or changed cut list counts as a new composition. The selected clip's details show use count and recovery. History begins with this version; older exports are not backfilled.
+
 ## Find available clips and choose ratings
 
 In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync FunCiv Data** for dataset variants. **Show** offers:
@@ -77,13 +81,33 @@ In **Composer → Clip library**, use **＋ Folder** for local videos or **Sync 
 
 The section folder dialog shows **ready** counts and the actual reasons other entries cannot be used: **video not linked**, **local video unavailable**, **needs HF scripts**, **no motion script**, **draft excluded**, and **below the minimum rating**. Several reasons can apply to one clip. “Not linked” describes the app's index; the video may already exist on disk. Use **Index local folder…** in that dialog or **＋ Folder** in the library to connect it.
 
-Each compact row shows its name, duration, stars, availability, review status and categories. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. HF clip details also show the published category names and relative folder paths; search matches those paths as well. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
+Each compact row shows its name, duration, stars, availability, review status and categories. Click a row to open its **Selected clip** editor below the list. Rating, category and download controls appear there once, rather than repeating on every row. HF clip details also show published categories, relative folder paths and expandable **Tags**; library search matches them all. Search is case insensitive, treats underscores as spaces and requires every search word to match. See the [129-entry library screenshot](docs/composer-library.png), generated with synthetic fixtures.
 
 Open **Filters**, then choose **Sort clips → Rating: highest first** to browse by stars. Set **Minimum rating for session → 4★ or higher** or **5★ only**, then click **Assemble** or **New variation**. Assembly varies its choices among qualifying clips; display sorting does not rearrange the timeline. Search, Show and Sort are browsing controls; the minimum rating also applies to assembly, manual replacement choices, preview and export. Unrated clips qualify only under **All ratings**. Draft inclusion remains a separate assembly filter. The collapsed Filters summary shows the active minimum and draft setting.
 
 Stars initially use the dataset's `quality` rating for that script variant, not a Civitai popularity score. Local files start unrated; ComfyUI's internal review metadata is not imported from adjacent funscripts. Select a clip and use **Your rating** to assign a local rating, or select **Dataset rating** to reset an override. Your ratings persist across rescans, dataset refreshes and app restarts without changing the public dataset.
 
 The minimum is saved with the session. Raising it preserves your timeline and locks, pauses playback and requires preparation again. A warning identifies existing clips below the minimum; unlock their sections and reassemble, or replace them individually. Locked clips cannot bypass the minimum. Changing a used clip's rating also invalidates the prepared preview.
+
+## Creator and source filters
+
+Run **Sync FunCiv Data** to import the dataset's Civitai metadata. **Source filters** beside the song title restricts new selections by one or more creators, source model, Civitai content rating, source orientation and minimum source short edge. Creator usernames are searchable. A 1080 px minimum requires both source dimensions to be at least 1080; it does not change the output resolution or crop settings.
+
+Select a section and open **Sources** to inherit the session filters, **Narrow the session filters**, **Use only section filters**, or allow **Any source in this section**. Values in one field are alternatives; different fields must all match. Narrowing requires both the session and section choices, so disjoint creator lists produce no matches. Missing metadata matches only an unrestricted field or its **Unknown** choice. Counts group linked local/HF copies of the same video. Creator and other source labels are shared with those local copies, independently of draft or Audio sync status.
+
+Applying selection filters preserves current clips and playback. A warning identifies placed regions outside the new filters. Use **Assemble**, **Replace clip**, **Remake section** or manual clip assignment to update them; unlock kept clips that no longer qualify. New choices retain rating priority, optional tag preferences, folders, draft consent, duration and repeat rules. Source filters support Undo/Redo and are saved with the recipe; they do not prevent preview/export of an existing timeline.
+
+**Clip library → Browse source filters** filters only the library display. It does not alter session selection rules. Library search also matches creators, models, post IDs and model-version IDs. The selected clip's **Civitai source** details show the published creator, source dimensions, model, content rating, date and reactions. Civitai content ratings and popularity counts are separate from the script's star rating and do not affect ranking.
+
+## Optional tag preferences
+
+After **Sync FunCiv Data**, open **Session tags** beside the song title. Search the published tags and choose **Prefer** or **Less often**. Tags guide choices between clips with equal rating/recent-use scores: each matching preferred tag adds one point and each less-often tag subtracts one. Ratings adjusted for recent use come first. Untagged clips remain eligible; these choices never require or exclude a tag. Folder/category, readiness, draft, duration and repeat rules still apply.
+
+Select a song section and open its **Tags** button beside **Folders**. It can use the session defaults, **Add to session preferences**, **Use only section preferences**, or **Ignore tags for this section**. Section choices override a conflicting session choice. Each list supports up to 32 tags. Counts show unique videos in the eligible pool and whole library, combining linked local/HF variants; a clip's required duration can narrow the pool further.
+
+Applying preferences preserves current clips, trims and playback. Use **Assemble**, **Replace clip**, **Remake section** or **New variation** to make new choices. Preferences support Undo/Redo and **Save session**. Library search only changes browsing; it does not set assembly preferences.
+
+Tags describe videos and are shared across their linked records. Import works for approved scripts, drafts and Audio sync clips; draft selection still requires explicit inclusion. Missing published tags stay empty until the publisher adds them and you sync again. Tag refresh does not download scripts or change existing placements. Intensity remains stored for future work and does not affect selection.
 
 ## FunCiv Data and Civitai
 
@@ -105,9 +129,23 @@ Existing automatic **Uncategorized** entries gain the published labels on the ne
 
 HF's **Audio sync** marker is separate from folder categories, ratings and review status. Sync imports `audio_sync: true`; false or a missing field means unmarked. Marked clips show a badge and appear under **Show → Audio sync clips**. Changing a clip's category does not remove its Audio sync marker.
 
-In **Clip / audio sync** and **Clip + marked gaps** sections, marked video regions use L0 strokes generated from the loaded song's tempo and energy, even if a stored clip script is present. Other axes stay neutral during those regions, with the configured blend at cuts. Neighboring unmarked regions keep their own scripts. **Analyze song** before preparing preview or exporting. Video cuts, source trims and speed remain editable; generated strokes stay aligned to song time. **Follow song** still generates motion for the entire section, while **Neutral hold** keeps all axes neutral. The current implementation uses the loaded song analysis; a separate beat-stem input is not yet wired into Composer.
+In **Clip / audio sync** and **Clip + marked gaps** sections, marked video regions use L0 strokes from **Music & beats**, even if a stored clip script is present. Other axes stay neutral during those regions, with the configured blend at cuts. Neighboring unmarked regions keep their own scripts. Video cuts, source trims and speed remain editable; generated strokes stay aligned to song time. **Follow song** generates motion for the entire section, while **Neutral hold** keeps all axes neutral. Sessions without music-editor settings retain the original tempo/energy sine generator and need **Analyze song** before playback.
 
 When sync changes a used clip's Audio sync label, Composer pauses and invalidates prepared motion. Saved asset bindings also detect changed labels; reassemble to adopt updated assets, then prepare again. A locally available marked video can generate song motion without fetching its stored scripts; unlinked videos need their local folder indexed or **Download video + scripts**.
+
+## Music & beats
+
+Open **Composer → Music & beats** beside **Video arrangement**. This editor reuses Motion Studio's music analysis and pattern algorithms, with a separate waveform/script timeline.
+
+1. **Analyze main song** for its waveform and energy. The main song remains the playback and exported soundtrack.
+2. Click **＋ Import drums / beats** to load a drum stem. It is cached and analyzed automatically, in a separate beat-source library. Switching sources commits only after successful analysis; errors or cancellation retain the previous source and saved blocks. **Beat source → Main song** uses the song itself when no stem is available. Set **Beat audio starts at (ms)** to align the stem: positive delays, negative advances. Offsets and a newly imported source affect automatic generation; existing saved blocks stay unchanged until regenerated.
+3. Choose **Whole song**, a song section, or an In/Out range. Shift-drag on the waveform or drag the range edges. Click to seek; Ctrl/Command-wheel zooms around the pointer. **Fit selection** focuses the chosen interval.
+4. Choose **Simplify groove**, **Follow accents**, **Steady pulse**, or **Original timing**. Density, low-hit emphasis, syncopation and maximum hit rate refine event selection. Original timing also exposes beats per cycle. A manual tempo grid is available when beat detection is unsuitable.
+5. Pick **Auto · match sound**, **Suggest from audio**, a repeatable random variation, or one of **28 catalogue shapes**. Adjust stroke length, center, energy following and whether beats land at the low or high point. With a stem loaded, **Use main song for shape & energy** combines drum timing with the full mix.
+6. **Generate preview** draws a pink temporary curve. **Listen rhythm** auditions the selected timing with synthesized percussion; **Download rhythm WAV** exports it relative to the selected In time. **Why these shapes?** explains automatic choices.
+7. **Apply to arrangement** beside the timeline saves the curve. **Open Video arrangement →** returns to the main timeline, where the saved beat lane appears immediately. It replaces saved audio inside the range and preserves both outside fragments, with one-step Undo/Redo. Click a saved block to load its settings and generate a replacement. **Save session** persists the stem reference, analysis, alignment, settings and authored blocks.
+
+Importing a stem supplies timing; **Generate preview → Apply to arrangement** authors the script. To use it for every video in a section, select that section and set **Motion → Follow song**. Saved purple curves feed Audio sync clips, Follow song sections and marked audio gaps in preview, device preparation and video/script export. Uncovered ranges use the last saved settings and current beat source; outside the beat file's coverage they are neutral. Complete saved ranges can play from their stored points without reanalyzing audio. Editing releases device sync; prepare it again before device playback. Analysis and pattern matching are deterministic signal heuristics, not verse recognition or source separation. Individual point dragging is not yet available.
 
 ## Playback, devices, and temporary video
 
@@ -123,7 +161,7 @@ Preview defaults to devices off. Connect a device through FunSync's **Devices** 
 
 ## Current limits and next work
 
-This first version provides an editable composition workflow. Automatic verse/chorus recognition, weighted category pools, beat-aware clip scoring, interactive curve editing, automatic motion-gap detection, rendered transitions, and GPU motion extraction jobs are future work. Song motion currently uses an energy-following sine pattern on a tempo grid. Video uses hard cuts with configurable motion blending.
+This first version provides an editable composition workflow. Automatic verse/chorus recognition, weighted category pools, beat-aware clip scoring, individual script-point editing, automatic motion-gap detection, rendered transitions, and GPU motion extraction jobs are future work. Music & beats supports authored pattern blocks and separate main/beat audio; older sessions retain their sine/tempo behavior. Video uses hard cuts with configurable motion blending.
 
 Motion Studio's algorithms are vendored with provenance; the live ComfyUI graph/editor is not embedded or called. This version does not continuously rewrite device scripts during playback: edits produce a new prepared snapshot. Direct local preview uses browser-supported video formats; FFmpeg export can normalize sources that Chromium cannot decode. The inherited LAN remote features are not enabled by the loopback-only backend binding.
 

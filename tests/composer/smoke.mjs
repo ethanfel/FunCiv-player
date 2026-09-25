@@ -7,10 +7,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposerService } from '../../electron/composer-service.cjs';
-import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary, checkLibraryReadiness } from './timeline-ui.mjs';
+import { checkTimelineEditing, chooseSectionFolders, checkLargeLibrary, checkLibraryReadiness, checkFolderCollections } from './timeline-ui.mjs';
 import { checkSectionHandles, checkPopulatedSectionHandle } from './section-ui.mjs';
 import { checkDraftAssembly } from './assembly-ui.mjs';
 import { checkSaveDuringEditing, checkSourceDragEscape } from './editor-regressions-ui.mjs';
+import { checkAutomaticPacing, checkEditingPlayback } from './pacing-ui.mjs';
+import { checkScopedVariations } from './variations-ui.mjs';
+import { checkPlayerControls } from './player-controls-ui.mjs';
+import { checkSeekBar } from './seeking-ui.mjs';
+import { checkMusicEditor } from './music-ui.mjs';
+import { checkTagPreferences } from './tags-ui.mjs';
+import { checkSourceFilters } from './source-filters-ui.mjs';
 
 const checkout=fileURLToPath(new URL('../..',import.meta.url));
 const root=await fs.mkdtemp(path.join(os.tmpdir(),'funciv-electron-'));
@@ -24,6 +31,7 @@ try{
     if(name!=='C')await fs.writeFile(path.join(library,`${name}.funscript`),JSON.stringify({actions:Array.from({length:9},(_,i)=>({at:i*250,pos:i%2?90:10}))}));
   }
   await service.run('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=220:duration=6','-af',"volume='0.5+0.5*sin(4*PI*t)':eval=frame",path.join(root,'Preview song.wav')],signal);
+  await service.run('ffmpeg',['-v','error','-f','lavfi','-i','aevalsrc=sin(2*PI*90*t)*exp(-mod(t\\,0.5)*35):s=22050:d=6',path.join(root,'Drums.wav')],signal);
   await service.scan(path.join(root,'clips'),signal);const song=await service.importSong(path.join(root,'Preview song.wav'),signal);
   await service.tag(service.catalog.clips.find(c=>c.name==='B.mp4').id,'Flow');
   service.catalog.clips.push({id:'synthetic-remote',name:'Remote fixture',origin:'dataset',quality:5,review_status:'approved',available:false,duration_ms:2000,categories:['Pulse']});await service.saveCatalog();
@@ -84,6 +92,8 @@ try{
   assert.equal(await page.locator('.fc-folder-dialog input[value=Alternate]').count(),1,'HF category labels appear in the song-section folder picker');
   await page.locator('.fc-folder-dialog button[value=cancel]').click({force:true});
   await checkLibraryReadiness(page,path.join(screenshots,'composer-folder-readiness.png'));
+  await checkFolderCollections(page,path.join(screenshots,'composer-folder-collections.png'));
+  await checkAutomaticPacing(page,until);
   await checkDraftAssembly(page,until);
   assert.equal(await page.evaluate(()=>window.app.composer.session.min_rating),4);
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'song');
@@ -120,12 +130,21 @@ try{
   await page.setViewportSize({width:1500,height:1080});
   await page.locator('[data-action=analyze]').click({force:true});
   await until(()=>!!window.app.composer.session.analysis,{timeout:20000});
+  // These six one-second cuts are manually specified for the small transport fixture.
+  await page.evaluate(async()=>{const c=window.app.composer,{planRegions}=await import('./../packages/composer-core/index.mjs');for(const section of c.session.sections)c.session=planRegions(c.session,section.id,[]);c.renderEditor();});
   await page.locator('[data-action=assemble]').click({force:true});
   await until(()=>window.app.composer.session.placements.length>0);
   await page.locator('[data-action=prepare]').dispatchEvent('click');
   await until(()=>!!window.app.composer.prepared&&!window.app.composer.preparing,{timeout:20000});
   assert.equal(await page.locator('[data-field=playback-mode]').inputValue(),'preview');
   console.log('Song analyzed and preview prepared.');
+  await checkEditingPlayback(page,until);
+  await checkScopedVariations(page,until);
+  await checkTagPreferences(page,until,path.join(screenshots,'composer-tags.png'));
+  await checkSourceFilters(page,until,path.join(screenshots,'composer-sources.png'));
+  await checkMusicEditor(app,page,until,path.join(root,'Drums.wav'),path.join(screenshots,'composer-music.png'));
+  await checkSeekBar(page,until);
+  await checkPlayerControls(page,until,screenshots);
   assert.equal(await page.evaluate(()=>window.app.composer.prepared.snapshot.scripts.L0.metadata.chapters[1].startTime),1000);
   await page.locator('[data-action=play]').click({force:true});
   await until(()=>window.app.composer.player.audio.currentTime>2.2,{timeout:15000});
@@ -133,8 +152,8 @@ try{
   assert.equal(await page.evaluate(()=>window.app.composer.player.audio.paused),true);
   await page.evaluate(()=>window.app.composer.setPosition(4100));
   await until(()=>!window.app.composer.player.aligning);
-  const clocks=await page.evaluate(()=>{const p=window.app.composer.player;return {audio:p.audio.currentTime,video:p.videos[p.active].currentTime,start:p.current.start_ms,paused:p.audio.paused};});
-  assert.ok(Math.abs(clocks.video-(clocks.audio-clocks.start/1000))<.08);assert.ok(clocks.paused);
+  const clocks=await page.evaluate(()=>{const p=window.app.composer.player;return {audio:p.audio.currentTime,video:p.videos[p.active].currentTime,start:p.current.start_ms,source:p.current.source_in_ms,rate:p.current.rate,paused:p.audio.paused};});
+  assert.ok(Math.abs(clocks.video-(clocks.source/1000+(clocks.audio-clocks.start/1000)*clocks.rate))<.08);assert.ok(clocks.paused);
   await page.locator('[data-field=playback-mode]').selectOption('song');
   assert.ok(await page.evaluate(()=>!window.app.composer.prepared&&Math.abs(window.app.composer.player.audio.currentTime-4.1)<.01&&window.app.composer.player.videos.every(v=>v.paused&&v.hidden)));
   await page.locator('[data-action=play]').click({force:true});await until(()=>window.app.composer.player.audio.currentTime>4.35);
@@ -278,6 +297,7 @@ try{
   await page.locator('[data-field=min_rating]').selectOption('5');
   // Restrict this fixture to draft clips; category checkbox interaction is covered above.
   await page.evaluate(()=>window.app.composer.edit(s=>s.sections.forEach(section=>{section.categories=['Draft'];})));
+  await page.evaluate(async()=>{const c=window.app.composer,{planRegions}=await import('./../packages/composer-core/index.mjs');for(const section of c.session.sections)c.session=planRegions(c.session,section.id,[]);c.renderEditor();});
   await page.locator('[data-action=assemble]').click({force:true});
   await until(()=>window.app.composer.session.placements.length===6&&window.app.composer.session.placements.every(p=>p.clip_id==='synthetic-draft'));
   await page.locator('[data-action=prepare]').dispatchEvent('click');
